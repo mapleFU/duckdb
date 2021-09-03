@@ -38,6 +38,10 @@
 #include "visualizer-extension.hpp"
 #endif
 
+#ifdef BUILD_TILEDB_EXTENSION
+#include "tiledb-extension.hpp"
+#endif
+
 namespace duckdb {
 class DuckDB;
 
@@ -66,6 +70,10 @@ public:
 #endif
 #ifdef BUILD_VISUALIZER_EXTENSION
 		db.LoadExtension<VisualizerExtension>();
+#endif
+
+		#ifdef BUILD_TILEDB_EXTENSION
+		db.LoadExtension<TileDBExtension>();
 #endif
 	}
 
@@ -101,6 +109,13 @@ public:
 		} else if (extension == "fts") {
 #ifdef BUILD_FTS_EXTENSION
 			db.LoadExtension<FTSExtension>();
+#else
+			// fts extension required but not build: skip this test
+			return ExtensionLoadResult::NOT_LOADED;
+#endif
+		} else if (extension == "tiledb") {
+#ifdef BUILD_TILEDB_EXTENSION
+			db.LoadExtension<TileDBExtension>();
 #else
 			// fts extension required but not build: skip this test
 			return ExtensionLoadResult::NOT_LOADED;
