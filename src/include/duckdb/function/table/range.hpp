@@ -12,11 +12,23 @@
 
 namespace duckdb {
 
+struct CheckpointFunction {
+	static void RegisterFunction(BuiltinFunctions &set);
+};
+
+struct GlobTableFunction {
+	static void RegisterFunction(BuiltinFunctions &set);
+};
+
 struct RangeTableFunction {
 	static void RegisterFunction(BuiltinFunctions &set);
 };
 
 struct RepeatTableFunction {
+	static void RegisterFunction(BuiltinFunctions &set);
+};
+
+struct UnnestTableFunction {
 	static void RegisterFunction(BuiltinFunctions &set);
 };
 

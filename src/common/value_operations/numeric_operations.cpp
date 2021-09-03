@@ -3,154 +3,96 @@
 #include "duckdb/common/operator/numeric_binary_operators.hpp"
 #include "duckdb/common/value_operations/value_operations.hpp"
 #include "duckdb/common/operator/aggregate_operators.hpp"
+#include "duckdb/common/operator/add.hpp"
+#include "duckdb/common/operator/multiply.hpp"
+#include "duckdb/common/operator/subtract.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
-template <class OP, bool IGNORE_NULL> static Value templated_binary_operation(const Value &left, const Value &right) {
-	Value result;
+template <class OP>
+static Value BinaryValueOperation(const Value &left, const Value &right) {
+	auto left_type = left.type();
+	auto right_type = right.type();
+	LogicalType result_type = left_type;
+	if (left_type != right_type) {
+		result_type = LogicalType::MaxLogicalType(left.type(), right.type());
+		Value left_cast = left.CastAs(result_type);
+		Value right_cast = right.CastAs(result_type);
+		return BinaryValueOperation<OP>(left_cast, right_cast);
+	}
 	if (left.is_null || right.is_null) {
-		if (IGNORE_NULL) {
-			if (!right.is_null) {
-				result = right;
-			} else {
-				result = left;
-			}
-		} else {
-			result.type = max(left.type, right.type);
-			result.is_null = true;
-		}
-		return result;
+		return Value().CastAs(result_type);
 	}
-	result.is_null = false;
-	if (left.type != right.type) {
-		if (TypeIsIntegral(left.type) && TypeIsIntegral(right.type) &&
-		    (left.type < TypeId::INT64 || right.type < TypeId::INT64)) {
-			// upcast integer types if necessary
-			Value left_cast = left.CastAs(TypeId::INT64);
-			Value right_cast = right.CastAs(TypeId::INT64);
-			result = templated_binary_operation<OP, IGNORE_NULL>(left_cast, right_cast);
-			if (result.is_null) {
-				result.type = max(left.type, right.type);
-			} else {
-				auto type = max(MinimalType(result.GetValue<int64_t>()), max(left.type, right.type));
-				result = result.CastAs(type);
-			}
-			return result;
+	if (TypeIsIntegral(result_type.InternalType())) {
+		hugeint_t left_hugeint;
+		hugeint_t right_hugeint;
+		switch (result_type.InternalType()) {
+		case PhysicalType::INT8:
+			left_hugeint = Hugeint::Convert(left.value_.tinyint);
+			right_hugeint = Hugeint::Convert(right.value_.tinyint);
+			break;
+		case PhysicalType::INT16:
+			left_hugeint = Hugeint::Convert(left.value_.smallint);
+			right_hugeint = Hugeint::Convert(right.value_.smallint);
+			break;
+		case PhysicalType::INT32:
+			left_hugeint = Hugeint::Convert(left.value_.integer);
+			right_hugeint = Hugeint::Convert(right.value_.integer);
+			break;
+		case PhysicalType::INT64:
+			left_hugeint = Hugeint::Convert(left.value_.bigint);
+			right_hugeint = Hugeint::Convert(right.value_.bigint);
+			break;
+		case PhysicalType::INT128:
+			left_hugeint = left.value_.hugeint;
+			right_hugeint = right.value_.hugeint;
+			break;
+		default:
+			throw NotImplementedException("Unimplemented type for value binary op");
 		}
-		if (TypeIsIntegral(left.type) && TypeIsNumeric(right.type)) {
-			Value left_cast = left.CastAs(right.type);
-			return templated_binary_operation<OP, IGNORE_NULL>(left_cast, right);
-		}
-		if (TypeIsNumeric(left.type) && TypeIsIntegral(right.type)) {
-			Value right_cast = right.CastAs(left.type);
-			return templated_binary_operation<OP, IGNORE_NULL>(left, right_cast);
-		}
-		throw TypeMismatchException(left.type, right.type, "Cannot perform binary operation on these two types");
+		// integer addition
+		return Value::Numeric(result_type,
+		                      OP::template Operation<hugeint_t, hugeint_t, hugeint_t>(left_hugeint, right_hugeint));
+	} else if (result_type.InternalType() == PhysicalType::FLOAT) {
+		return Value::FLOAT(
+		    OP::template Operation<float, float, float>(left.GetValue<float>(), right.GetValue<float>()));
+	} else if (result_type.InternalType() == PhysicalType::DOUBLE) {
+		return Value::DOUBLE(
+		    OP::template Operation<double, double, double>(left.GetValue<double>(), right.GetValue<double>()));
+	} else {
+		throw NotImplementedException("Unimplemented type for value binary op");
 	}
-	result.type = left.type;
-	switch (left.type) {
-	case TypeId::INT8:
-		result.value_.tinyint =
-		    OP::template Operation<int8_t, int8_t, int8_t>(left.value_.tinyint, right.value_.tinyint);
-		break;
-	case TypeId::INT16:
-		result.value_.smallint =
-		    OP::template Operation<int16_t, int16_t, int16_t>(left.value_.smallint, right.value_.smallint);
-		break;
-	case TypeId::INT32:
-		result.value_.integer =
-		    OP::template Operation<int32_t, int32_t, int32_t>(left.value_.integer, right.value_.integer);
-		break;
-	case TypeId::INT64:
-		result.value_.bigint =
-		    OP::template Operation<int64_t, int64_t, int64_t>(left.value_.bigint, right.value_.bigint);
-		break;
-	case TypeId::FLOAT:
-		result.value_.float_ = OP::template Operation<float, float, float>(left.value_.float_, right.value_.float_);
-		break;
-	case TypeId::DOUBLE:
-		result.value_.double_ =
-		    OP::template Operation<double, double, double>(left.value_.double_, right.value_.double_);
-		break;
-	case TypeId::POINTER:
-		result.value_.pointer =
-		    OP::template Operation<uint64_t, uint64_t, uint64_t>(left.value_.pointer, right.value_.pointer);
-		break;
-	default:
-		throw NotImplementedException("Unimplemented type");
-	}
-	return result;
 }
 
 //===--------------------------------------------------------------------===//
 // Numeric Operations
 //===--------------------------------------------------------------------===//
 Value ValueOperations::Add(const Value &left, const Value &right) {
-	return templated_binary_operation<duckdb::AddOperator, false>(left, right);
+	return BinaryValueOperation<duckdb::AddOperator>(left, right);
 }
 
 Value ValueOperations::Subtract(const Value &left, const Value &right) {
-	return templated_binary_operation<duckdb::SubtractOperator, false>(left, right);
+	return BinaryValueOperation<duckdb::SubtractOperator>(left, right);
 }
 
 Value ValueOperations::Multiply(const Value &left, const Value &right) {
-	return templated_binary_operation<duckdb::MultiplyOperator, false>(left, right);
+	return BinaryValueOperation<duckdb::MultiplyOperator>(left, right);
 }
 
 Value ValueOperations::Modulo(const Value &left, const Value &right) {
-	if (!TypeIsIntegral(left.type) || !TypeIsIntegral(right.type)) {
-		throw InvalidTypeException(left.type, "Arguments to modulo must be integral");
+	if (right == 0) {
+		return Value(right.type());
+	} else {
+		return BinaryValueOperation<duckdb::ModuloOperator>(left, right);
 	}
-	if (left.type != right.type) {
-		if (left.type < right.type) {
-			return Modulo(left.CastAs(right.type), right);
-		} else {
-			return Modulo(left, right.CastAs(left.type));
-		}
-	}
-	if (left.is_null || right.is_null) {
-		return Value(left.type);
-	}
-	Value result;
-	result.is_null = false;
-	result.type = left.type;
-	switch (left.type) {
-	case TypeId::INT8:
-		return Value::TINYINT(left.value_.tinyint % right.value_.tinyint);
-		break;
-	case TypeId::INT16:
-		return Value::SMALLINT(left.value_.smallint % right.value_.smallint);
-		break;
-	case TypeId::INT32:
-		return Value::INTEGER(left.value_.integer % right.value_.integer);
-		break;
-	case TypeId::INT64:
-		result.value_.bigint = left.value_.bigint % right.value_.bigint;
-		break;
-	default:
-		throw NotImplementedException("Unimplemented type for modulo");
-	}
-	return result;
 }
 
 Value ValueOperations::Divide(const Value &left, const Value &right) {
-	Value zero = Value::Numeric(right.type, 0);
 	if (right == 0) {
-		// special case: divide by zero
-		Value result;
-		result.type = max(left.type, right.type);
-		result.is_null = true;
-		return result;
+		return Value(right.type());
 	} else {
-		return templated_binary_operation<duckdb::DivideOperator, false>(left, right);
+		return BinaryValueOperation<duckdb::DivideOperator>(left, right);
 	}
 }
 
-// Value ValueOperations::Min(const Value &left, const Value &right) {
-// 	return templated_binary_operation<duckdb::Min, true>(left, right);
-// }
-
-// Value ValueOperations::Max(const Value &left, const Value &right) {
-// 	return templated_binary_operation<duckdb::Max, true>(left, right);
-// }
+} // namespace duckdb

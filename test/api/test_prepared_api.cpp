@@ -9,6 +9,9 @@ TEST_CASE("Test prepared statements API", "[api]") {
 	DuckDB db(nullptr);
 	Connection con(db);
 
+	// prepare no statements
+	REQUIRE_FAIL(con.Prepare(""));
+
 	REQUIRE_NO_FAIL(con.Query("CREATE TABLE a (i TINYINT)"));
 	REQUIRE_NO_FAIL(con.Query("INSERT INTO a VALUES (11), (12), (13)"));
 	REQUIRE_NO_FAIL(con.Query("CREATE TABLE strings(s VARCHAR)"));
@@ -43,14 +46,6 @@ TEST_CASE("Test prepared statements API", "[api]") {
 	result = prepare->Execute(13);
 	REQUIRE(CHECK_COLUMN(result, 0, {1}));
 	REQUIRE(prepare->n_param == 1);
-
-	string prepare_name = prepare->name;
-	// we can execute the prepared statement ourselves as well using the name
-	result = con.Query("EXECUTE " + prepare_name + "(12)");
-	REQUIRE(CHECK_COLUMN(result, 0, {1}));
-	// if we destroy the prepared statement it goes away
-	prepare.reset();
-	REQUIRE_FAIL(con.Query("EXECUTE " + prepare_name + "(12)"));
 }
 
 TEST_CASE("Test type resolution of function with parameter expressions", "[api]") {
@@ -86,13 +81,11 @@ TEST_CASE("Test prepared statements and dependencies", "[api]") {
 	// keep a prepared statement around
 	auto prepare = con.Prepare("SELECT COUNT(*) FROM a WHERE i=$1");
 
-	// now we can't drop the table
-	REQUIRE_FAIL(con2.Query("DROP TABLE a"));
-
-	// until we delete the prepared statement
-	prepare.reset();
-
+	// we can drop the table
 	REQUIRE_NO_FAIL(con2.Query("DROP TABLE a"));
+
+	// now the prepared statement fails when executing
+	REQUIRE_FAIL(prepare->Execute(11));
 }
 
 TEST_CASE("Dropping connection with prepared statement resets dependencies", "[api]") {
@@ -108,14 +101,38 @@ TEST_CASE("Dropping connection with prepared statement resets dependencies", "[a
 	result = prepared->Execute(12);
 	REQUIRE(CHECK_COLUMN(result, 0, {1}));
 
-	// now we can't drop the table
-	REQUIRE_FAIL(con2.Query("DROP TABLE a"));
-
-	// now drop con
-	con.reset();
-
-	// now we can
+	// we can drop the table
 	REQUIRE_NO_FAIL(con2.Query("DROP TABLE a"));
+
+	// after the table is dropped, the prepared statement no longer succeeds when run
+	REQUIRE_FAIL(prepared->Execute(12));
+	REQUIRE_FAIL(prepared->Execute(12));
+}
+
+TEST_CASE("Alter table and prepared statements", "[api]") {
+	unique_ptr<QueryResult> result;
+	DuckDB db(nullptr);
+	auto con = make_unique<Connection>(db);
+	Connection con2(db);
+
+	REQUIRE_NO_FAIL(con->Query("CREATE TABLE a(i TINYINT)"));
+	REQUIRE_NO_FAIL(con->Query("INSERT INTO a VALUES (11), (12), (13)"));
+
+	auto prepared = con->Prepare("SELECT * FROM a WHERE i=$1");
+	result = prepared->Execute(12);
+	REQUIRE(CHECK_COLUMN(result, 0, {12}));
+
+	REQUIRE(prepared->ColumnCount() == 1);
+	REQUIRE(prepared->GetStatementType() == StatementType::SELECT_STATEMENT);
+	REQUIRE(prepared->GetTypes()[0].id() == LogicalTypeId::TINYINT);
+	REQUIRE(prepared->GetNames()[0] == "i");
+
+	// we can alter the type of the column
+	REQUIRE_NO_FAIL(con2.Query("ALTER TABLE a ALTER i TYPE BIGINT USING i"));
+
+	// after the table is altered, the return types change, so we fail executing the statement
+	REQUIRE_FAIL(prepared->Execute(12));
+	REQUIRE_FAIL(prepared->Execute(12));
 }
 
 TEST_CASE("Test destructors of prepared statements", "[api]") {
@@ -134,8 +151,8 @@ TEST_CASE("Test destructors of prepared statements", "[api]") {
 	REQUIRE(CHECK_COLUMN(result, 0, {8}));
 	// now destroy the connection
 	con.reset();
-	// now we can't use the prepared statement anymore
-	REQUIRE_FAIL(prepare->Execute(3, 5));
+	// we can still use the prepared statement: the connection is alive until the prepared statement is dropped
+	REQUIRE_NO_FAIL(prepare->Execute(3, 5));
 	// destroying the prepared statement is fine
 	prepare.reset();
 
@@ -148,13 +165,13 @@ TEST_CASE("Test destructors of prepared statements", "[api]") {
 	REQUIRE(CHECK_COLUMN(result, 0, {8}));
 	// destroy the db
 	db.reset();
-	// now we can't use the prepared statement anymore
-	REQUIRE_FAIL(prepare->Execute(3, 5));
-	// neither can we use the connection
-	REQUIRE_FAIL(con->Query("SELECT 42"));
-	// or prepare new statements
+	// we can still use the prepared statement
+	REQUIRE_NO_FAIL(prepare->Execute(3, 5));
+	// and the connection
+	REQUIRE_NO_FAIL(con->Query("SELECT 42"));
+	// we can also prepare new statements
 	prepare = con->Prepare("SELECT $1::INTEGER+$2::INTEGER");
-	REQUIRE(!prepare->success);
+	REQUIRE(prepare->success);
 }
 
 TEST_CASE("Test incorrect usage of prepared statements API", "[api]") {
@@ -174,11 +191,13 @@ TEST_CASE("Test incorrect usage of prepared statements API", "[api]") {
 	// prepare an SQL string with a parse error
 	auto prepare = con.Prepare("SELEC COUNT(*) FROM a WHERE i=$1");
 	// we cannot execute this prepared statement
-	REQUIRE_FAIL(prepare->Execute(12));
+	REQUIRE(!prepare->success);
+	REQUIRE_THROWS(prepare->Execute(12));
 
 	// cannot prepare multiple statements at once
 	prepare = con.Prepare("SELECT COUNT(*) FROM a WHERE i=$1; SELECT 42+$2;");
-	REQUIRE_FAIL(prepare->Execute(12));
+	REQUIRE(!prepare->success);
+	REQUIRE_THROWS(prepare->Execute(12));
 
 	// also not in the Query syntax
 	REQUIRE_FAIL(con.Query("SELECT COUNT(*) FROM a WHERE i=$1; SELECT 42+$2", 11));
@@ -280,6 +299,19 @@ TEST_CASE("Test ANALYZE", "[api]") {
 	REQUIRE(res->success);
 }
 
+TEST_CASE("Test DECIMAL with PreparedStatement", "[api]") {
+	unique_ptr<QueryResult> result;
+	DuckDB db(nullptr);
+	Connection con(db);
+
+	auto ps = con.Prepare("SELECT $1::DECIMAL(4,1), $2::DECIMAL(9,1), $3::DECIMAL(18,3), $4::DECIMAL(38,8)");
+	result = ps->Execute(1.1, 100.1, 1401.123, "12481204981084098124.12398");
+	REQUIRE(CHECK_COLUMN(result, 0, {1.1}));
+	REQUIRE(CHECK_COLUMN(result, 1, {100.1}));
+	REQUIRE(CHECK_COLUMN(result, 2, {1401.123}));
+	REQUIRE(CHECK_COLUMN(result, 3, {12481204981084098124.12398}));
+}
+
 TEST_CASE("Test BLOB with PreparedStatement", "[api]") {
 	unique_ptr<QueryResult> result;
 	DuckDB db(nullptr);
@@ -290,21 +322,21 @@ TEST_CASE("Test BLOB with PreparedStatement", "[api]") {
 	unique_ptr<char[]> blob_chars(new char[num_chars]);
 	char ch = '\0';
 	idx_t buf_idx = 0;
-	for(idx_t i = 0; i < 255; ++i, ++ch) {
+	for (idx_t i = 0; i < 255; ++i, ++ch) {
 		// skip chars: '\0', new line, shift in, comma, and crtl+Z
-		if(ch == '\0' || ch == '\n' || ch == '\15' || ch == ',' || ch == '\32') {
+		if (ch == '\0' || ch == '\n' || ch == '\15' || ch == ',' || ch == '\32') {
 			continue;
 		}
 		blob_chars[buf_idx] = ch;
-    	++buf_idx;
+		++buf_idx;
 	}
 
 	REQUIRE_NO_FAIL(con.Query("CREATE TABLE blobs (b BYTEA);"));
 
 	// Insert blob values through a PreparedStatement
-	string str_blob(blob_chars.get(), num_chars);
+	Value blob_val = Value::BLOB((const_data_ptr_t)blob_chars.get(), num_chars);
 	unique_ptr<PreparedStatement> ps = con.Prepare("INSERT INTO blobs VALUES (?::BYTEA)");
-	ps->Execute(str_blob);
+	ps->Execute(blob_val);
 	REQUIRE(ps->success);
 	ps.reset();
 
@@ -316,7 +348,7 @@ TEST_CASE("Test BLOB with PreparedStatement", "[api]") {
 	REQUIRE(CHECK_COLUMN(result, 0, {1}));
 
 	result = con.Query("SELECT b FROM blobs");
-	REQUIRE(CHECK_COLUMN(result, 0, {Value::BLOB(str_blob)}));
+	REQUIRE(CHECK_COLUMN(result, 0, {blob_val}));
 
 	blob_chars.reset();
 }
@@ -366,6 +398,7 @@ TEST_CASE("PREPARE multiple statements", "[prepared]") {
 
 static unique_ptr<QueryResult> TestExecutePrepared(Connection &con, string query) {
 	auto prepared = con.Prepare(query);
+	REQUIRE(prepared->success);
 	return prepared->Execute();
 }
 

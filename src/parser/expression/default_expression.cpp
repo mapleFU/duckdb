@@ -2,8 +2,7 @@
 
 #include "duckdb/common/exception.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
 DefaultExpression::DefaultExpression() : ParsedExpression(ExpressionType::VALUE_DEFAULT, ExpressionClass::DEFAULT) {
 }
@@ -21,3 +20,5 @@ unique_ptr<ParsedExpression> DefaultExpression::Copy() const {
 unique_ptr<ParsedExpression> DefaultExpression::Deserialize(ExpressionType type, Deserializer &source) {
 	return make_unique<DefaultExpression>();
 }
+
+} // namespace duckdb

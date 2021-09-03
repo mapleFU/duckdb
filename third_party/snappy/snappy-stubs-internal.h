@@ -31,9 +31,9 @@
 #ifndef THIRD_PARTY_SNAPPY_OPENSOURCE_SNAPPY_STUBS_INTERNAL_H_
 #define THIRD_PARTY_SNAPPY_OPENSOURCE_SNAPPY_STUBS_INTERNAL_H_
 
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#endif
+// #ifdef HAVE_CONFIG_H
+// #include "config.h"
+// #endif
 
 #include <string>
 
@@ -115,7 +115,7 @@
 
 namespace snappy {
 
-static const uint32 kuint32max = static_cast<uint32>(0xFFFFFFFF);
+//static const uint32 kuint32max = static_cast<uint32>(0xFFFFFFFF);
 //static const int64 kint64max = static_cast<int64>(0x7FFFFFFFFFFFFFFFLL);
 
 

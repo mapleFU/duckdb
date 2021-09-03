@@ -1,17 +1,16 @@
 #include "duckdb/parser/query_node/select_node.hpp"
 #include "duckdb/parser/expression_util.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
-bool SelectNode::Equals(const QueryNode *other_) const {
-	if (!QueryNode::Equals(other_)) {
+bool SelectNode::Equals(const QueryNode *other_p) const {
+	if (!QueryNode::Equals(other_p)) {
 		return false;
 	}
-	if (this == other_) {
+	if (this == other_p) {
 		return true;
 	}
-	auto other = (SelectNode *)other_;
+	auto other = (SelectNode *)other_p;
 
 	// SELECT
 	if (!ExpressionUtil::ListEquals(select_list, other->select_list)) {
@@ -36,7 +35,9 @@ bool SelectNode::Equals(const QueryNode *other_) const {
 	if (!ExpressionUtil::ListEquals(groups, other->groups)) {
 		return false;
 	}
-
+	if (!SampleOptions::Equals(sample.get(), other->sample.get())) {
+		return false;
+	}
 	// HAVING
 	if (!BaseExpression::Equals(having.get(), other->having.get())) {
 		return false;
@@ -56,6 +57,7 @@ unique_ptr<QueryNode> SelectNode::Copy() {
 		result->groups.push_back(group->Copy());
 	}
 	result->having = having ? having->Copy() : nullptr;
+	result->sample = sample ? sample->Copy() : nullptr;
 	this->CopyProperties(*result);
 	return move(result);
 }
@@ -71,6 +73,7 @@ void SelectNode::Serialize(Serializer &serializer) {
 	// group by / having
 	serializer.WriteList(groups);
 	serializer.WriteOptional(having);
+	serializer.WriteOptional(sample);
 }
 
 unique_ptr<QueryNode> SelectNode::Deserialize(Deserializer &source) {
@@ -84,5 +87,8 @@ unique_ptr<QueryNode> SelectNode::Deserialize(Deserializer &source) {
 	// group by / having
 	source.ReadList<ParsedExpression>(result->groups);
 	result->having = source.ReadOptional<ParsedExpression>();
+	result->sample = source.ReadOptional<SampleOptions>();
 	return move(result);
 }
+
+} // namespace duckdb

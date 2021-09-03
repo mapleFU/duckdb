@@ -1,11 +1,12 @@
 #include "duckdb/parser/statement/explain_statement.hpp"
 #include "duckdb/parser/transformer.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
-unique_ptr<ExplainStatement> Transformer::TransformExplain(PGNode *node) {
-	PGExplainStmt *stmt = reinterpret_cast<PGExplainStmt *>(node);
-	assert(stmt);
+unique_ptr<ExplainStatement> Transformer::TransformExplain(duckdb_libpgquery::PGNode *node) {
+	auto stmt = reinterpret_cast<duckdb_libpgquery::PGExplainStmt *>(node);
+	D_ASSERT(stmt);
 	return make_unique<ExplainStatement>(TransformStatement(stmt->query));
 }
+
+} // namespace duckdb

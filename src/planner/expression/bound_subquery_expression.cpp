@@ -2,18 +2,17 @@
 
 #include "duckdb/common/exception.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
-BoundSubqueryExpression::BoundSubqueryExpression(TypeId return_type)
-    : Expression(ExpressionType::SUBQUERY, ExpressionClass::BOUND_SUBQUERY, return_type) {
+BoundSubqueryExpression::BoundSubqueryExpression(LogicalType return_type)
+    : Expression(ExpressionType::SUBQUERY, ExpressionClass::BOUND_SUBQUERY, move(return_type)) {
 }
 
 string BoundSubqueryExpression::ToString() const {
 	return "SUBQUERY";
 }
 
-bool BoundSubqueryExpression::Equals(const BaseExpression *other_) const {
+bool BoundSubqueryExpression::Equals(const BaseExpression *other_p) const {
 	// equality between bound subqueries not implemented currently
 	return false;
 }
@@ -21,3 +20,5 @@ bool BoundSubqueryExpression::Equals(const BaseExpression *other_) const {
 unique_ptr<Expression> BoundSubqueryExpression::Copy() {
 	throw SerializationException("Cannot copy BoundSubqueryExpression");
 }
+
+} // namespace duckdb

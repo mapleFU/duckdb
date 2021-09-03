@@ -5,15 +5,17 @@
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "duckdb/storage/table/append_state.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
-Index::Index(IndexType type, vector<column_t> column_ids,
-             vector<unique_ptr<Expression>> unbound_expressions)
-    : type(type), column_ids(column_ids), unbound_expressions(move(unbound_expressions)) {
-	for (auto &expr : this->unbound_expressions) {
-		types.push_back(expr->return_type);
-		bound_expressions.push_back(BindExpression(expr->Copy()));
+Index::Index(IndexType type, const vector<column_t> &column_ids_p,
+             const vector<unique_ptr<Expression>> &unbound_expressions, bool is_unique, bool is_primary)
+    : type(type), column_ids(column_ids_p), is_unique(is_unique), is_primary(is_primary) {
+	for (auto &expr : unbound_expressions) {
+		types.push_back(expr->return_type.InternalType());
+		logical_types.push_back(expr->return_type);
+		auto unbound_expression = expr->Copy();
+		bound_expressions.push_back(BindExpression(unbound_expression->Copy()));
+		this->unbound_expressions.emplace_back(move(unbound_expression));
 	}
 	for (auto &bound_expr : bound_expressions) {
 		executor.AddExpression(*bound_expr);
@@ -49,11 +51,11 @@ unique_ptr<Expression> Index::BindExpression(unique_ptr<Expression> expr) {
 		return make_unique<BoundReferenceExpression>(expr->return_type, column_ids[bound_colref.binding.column_index]);
 	}
 	ExpressionIterator::EnumerateChildren(*expr,
-	                                      [&](unique_ptr<Expression> expr) { return BindExpression(move(expr)); });
+	                                      [&](unique_ptr<Expression> &expr) { expr = BindExpression(move(expr)); });
 	return expr;
 }
 
-bool Index::IndexIsUpdated(vector<column_t> &column_ids) {
+bool Index::IndexIsUpdated(const vector<column_t> &column_ids) const {
 	for (auto &column : column_ids) {
 		if (column_id_set.find(column) != column_id_set.end()) {
 			return true;
@@ -61,3 +63,5 @@ bool Index::IndexIsUpdated(vector<column_t> &column_ids) {
 	}
 	return false;
 }
+
+} // namespace duckdb

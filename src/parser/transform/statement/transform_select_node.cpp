@@ -6,74 +6,78 @@
 #include "duckdb/parser/expression/star_expression.hpp"
 #include "duckdb/common/string_util.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
-unique_ptr<QueryNode> Transformer::TransformSelectNode(PGSelectStmt *stmt) {
+unique_ptr<QueryNode> Transformer::TransformSelectNode(duckdb_libpgquery::PGSelectStmt *stmt) {
 	unique_ptr<QueryNode> node;
 
 	switch (stmt->op) {
-	case PG_SETOP_NONE: {
+	case duckdb_libpgquery::PG_SETOP_NONE: {
 		node = make_unique<SelectNode>();
 		auto result = (SelectNode *)node.get();
-
+		if (stmt->withClause) {
+			TransformCTE(reinterpret_cast<duckdb_libpgquery::PGWithClause *>(stmt->withClause), *node);
+		}
 		if (stmt->windowClause) {
-			for (auto window_ele = stmt->windowClause->head; window_ele != NULL; window_ele = window_ele->next) {
-				auto window_def = reinterpret_cast<PGWindowDef *>(window_ele->data.ptr_value);
-				assert(window_def);
-				assert(window_def->name);
+			for (auto window_ele = stmt->windowClause->head; window_ele != nullptr; window_ele = window_ele->next) {
+				auto window_def = reinterpret_cast<duckdb_libpgquery::PGWindowDef *>(window_ele->data.ptr_value);
+				D_ASSERT(window_def);
+				D_ASSERT(window_def->name);
 				auto window_name = StringUtil::Lower(string(window_def->name));
 
 				auto it = window_clauses.find(window_name);
 				if (it != window_clauses.end()) {
-					throw ParserException("window \"%s\" is already defined", window_name.c_str());
+					throw ParserException("window \"%s\" is already defined", window_name);
 				}
 				window_clauses[window_name] = window_def;
 			}
 		}
 
+		// checks distinct clause
+		if (stmt->distinctClause != nullptr) {
+			auto modifier = make_unique<DistinctModifier>();
+			// checks distinct on clause
+			auto target = reinterpret_cast<duckdb_libpgquery::PGNode *>(stmt->distinctClause->head->data.ptr_value);
+			if (target) {
+				//  add the columns defined in the ON clause to the select list
+				TransformExpressionList(*stmt->distinctClause, modifier->distinct_on_targets, 0);
+			}
+			result->modifiers.push_back(move(modifier));
+		}
+
 		// do this early so the value lists also have a `FROM`
 		if (stmt->valuesLists) {
 			// VALUES list, create an ExpressionList
-			assert(!stmt->fromClause);
+			D_ASSERT(!stmt->fromClause);
 			result->from_table = TransformValuesList(stmt->valuesLists);
 			result->select_list.push_back(make_unique<StarExpression>());
 		} else {
-			result->from_table = TransformFrom(stmt->fromClause);
 			if (!stmt->targetList) {
 				throw ParserException("SELECT clause without selection list");
 			}
 			// select list
-			if (!TransformExpressionList(stmt->targetList, result->select_list)) {
-				throw Exception("Failed to transform expression list.");
-			}
+			TransformExpressionList(*stmt->targetList, result->select_list, 0);
+			result->from_table = TransformFrom(stmt->fromClause);
 		}
-		// checks distinct clause
-		if (stmt->distinctClause != NULL) {
-			auto modifier = make_unique<DistinctModifier>();
-			// checks distinct on clause
-			auto target = reinterpret_cast<PGNode *>(stmt->distinctClause->head->data.ptr_value);
-			if (target) {
-				//  add the columns defined in the ON clause to the select list
-				if (!TransformExpressionList(stmt->distinctClause, modifier->distinct_on_targets)) {
-					throw Exception("Failed to transform expression list from DISTINCT ON.");
-				}
-			}
-			result->modifiers.push_back(move(modifier));
-		}
-		// from table
+
+		// where
+		result->where_clause = TransformExpression(stmt->whereClause, 0);
 		// group by
 		TransformGroupBy(stmt->groupClause, result->groups);
-		result->having = TransformExpression(stmt->havingClause);
-		// where
-		result->where_clause = TransformExpression(stmt->whereClause);
+		// having
+		result->having = TransformExpression(stmt->havingClause, 0);
+		// sample
+		result->sample = TransformSampleOptions(stmt->sampleOptions);
 		break;
 	}
-	case PG_SETOP_UNION:
-	case PG_SETOP_EXCEPT:
-	case PG_SETOP_INTERSECT: {
+	case duckdb_libpgquery::PG_SETOP_UNION:
+	case duckdb_libpgquery::PG_SETOP_EXCEPT:
+	case duckdb_libpgquery::PG_SETOP_INTERSECT: {
 		node = make_unique<SetOperationNode>();
 		auto result = (SetOperationNode *)node.get();
+		if (stmt->withClause) {
+			TransformCTE(reinterpret_cast<duckdb_libpgquery::PGWithClause *>(stmt->withClause), *node);
+		}
 		result->left = TransformSelectNode(stmt->larg);
 		result->right = TransformSelectNode(stmt->rarg);
 		if (!result->left || !result->right) {
@@ -82,14 +86,14 @@ unique_ptr<QueryNode> Transformer::TransformSelectNode(PGSelectStmt *stmt) {
 
 		bool select_distinct = true;
 		switch (stmt->op) {
-		case PG_SETOP_UNION:
+		case duckdb_libpgquery::PG_SETOP_UNION:
 			select_distinct = !stmt->all;
 			result->setop_type = SetOperationType::UNION;
 			break;
-		case PG_SETOP_EXCEPT:
+		case duckdb_libpgquery::PG_SETOP_EXCEPT:
 			result->setop_type = SetOperationType::EXCEPT;
 			break;
-		case PG_SETOP_INTERSECT:
+		case duckdb_libpgquery::PG_SETOP_INTERSECT:
 			result->setop_type = SetOperationType::INTERSECT;
 			break;
 		default:
@@ -97,6 +101,9 @@ unique_ptr<QueryNode> Transformer::TransformSelectNode(PGSelectStmt *stmt) {
 		}
 		if (select_distinct) {
 			result->modifiers.push_back(make_unique<DistinctModifier>());
+		}
+		if (stmt->sampleOptions) {
+			throw ParserException("SAMPLE clause is only allowed in regular SELECT statements");
 		}
 		break;
 	}
@@ -107,7 +114,7 @@ unique_ptr<QueryNode> Transformer::TransformSelectNode(PGSelectStmt *stmt) {
 	// both the set operations and the regular select can have an ORDER BY/LIMIT attached to them
 	vector<OrderByNode> orders;
 	TransformOrderBy(stmt->sortClause, orders);
-	if (orders.size() > 0) {
+	if (!orders.empty()) {
 		auto order_modifier = make_unique<OrderModifier>();
 		order_modifier->orders = move(orders);
 		node->modifiers.push_back(move(order_modifier));
@@ -115,12 +122,14 @@ unique_ptr<QueryNode> Transformer::TransformSelectNode(PGSelectStmt *stmt) {
 	if (stmt->limitCount || stmt->limitOffset) {
 		auto limit_modifier = make_unique<LimitModifier>();
 		if (stmt->limitCount) {
-			limit_modifier->limit = TransformExpression(stmt->limitCount);
+			limit_modifier->limit = TransformExpression(stmt->limitCount, 0);
 		}
 		if (stmt->limitOffset) {
-			limit_modifier->offset = TransformExpression(stmt->limitOffset);
+			limit_modifier->offset = TransformExpression(stmt->limitOffset, 0);
 		}
 		node->modifiers.push_back(move(limit_modifier));
 	}
 	return node;
 }
+
+} // namespace duckdb

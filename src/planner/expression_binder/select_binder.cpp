@@ -8,14 +8,14 @@
 #include "duckdb/planner/expression_binder/aggregate_binder.hpp"
 #include "duckdb/planner/query_node/bound_select_node.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
 SelectBinder::SelectBinder(Binder &binder, ClientContext &context, BoundSelectNode &node, BoundGroupInformation &info)
     : ExpressionBinder(binder, context), inside_window(false), node(node), info(info) {
 }
 
-BindResult SelectBinder::BindExpression(ParsedExpression &expr, idx_t depth, bool root_expression) {
+BindResult SelectBinder::BindExpression(unique_ptr<ParsedExpression> *expr_ptr, idx_t depth, bool root_expression) {
+	auto &expr = **expr_ptr;
 	// check if the expression binds to one of the groups
 	auto group_index = TryBindGroup(expr, depth);
 	if (group_index != INVALID_INDEX) {
@@ -27,7 +27,7 @@ BindResult SelectBinder::BindExpression(ParsedExpression &expr, idx_t depth, boo
 	case ExpressionClass::WINDOW:
 		return BindWindow((WindowExpression &)expr, depth);
 	default:
-		return ExpressionBinder::BindExpression(expr, depth);
+		return ExpressionBinder::BindExpression(expr_ptr, depth);
 	}
 }
 
@@ -51,8 +51,8 @@ idx_t SelectBinder::TryBindGroup(ParsedExpression &expr, idx_t depth) {
 	}
 #ifdef DEBUG
 	for (auto entry : info.map) {
-		assert(!entry.first->Equals(&expr));
-		assert(!expr.Equals(entry.first));
+		D_ASSERT(!entry.first->Equals(&expr));
+		D_ASSERT(!expr.Equals(entry.first));
 	}
 #endif
 	return INVALID_INDEX;
@@ -60,8 +60,8 @@ idx_t SelectBinder::TryBindGroup(ParsedExpression &expr, idx_t depth) {
 
 BindResult SelectBinder::BindGroup(ParsedExpression &expr, idx_t depth, idx_t group_index) {
 	auto &group = node.groups[group_index];
-
 	return BindResult(make_unique<BoundColumnRefExpression>(expr.GetName(), group->return_type,
-	                                                        ColumnBinding(node.group_index, group_index), depth),
-	                  info.group_types[group_index]);
+	                                                        ColumnBinding(node.group_index, group_index), depth));
 }
+
+} // namespace duckdb

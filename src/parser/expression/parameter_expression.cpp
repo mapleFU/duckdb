@@ -3,20 +3,21 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/serializer.hpp"
 #include "duckdb/common/types/hash.hpp"
+#include "duckdb/common/to_string.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
 ParameterExpression::ParameterExpression()
     : ParsedExpression(ExpressionType::VALUE_PARAMETER, ExpressionClass::PARAMETER), parameter_nr(0) {
 }
 
 string ParameterExpression::ToString() const {
-	return "$" + std::to_string(parameter_nr);
+	return "$" + to_string(parameter_nr);
 }
 
 unique_ptr<ParsedExpression> ParameterExpression::Copy() const {
 	auto copy = make_unique<ParameterExpression>();
+	copy->parameter_nr = parameter_nr;
 	copy->CopyProperties(*this);
 	return move(copy);
 }
@@ -36,3 +37,5 @@ unique_ptr<ParsedExpression> ParameterExpression::Deserialize(ExpressionType typ
 	expression->parameter_nr = source.Read<idx_t>();
 	return move(expression);
 }
+
+} // namespace duckdb

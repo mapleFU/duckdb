@@ -11,6 +11,7 @@
 #include "duckdb/common/common.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/types.hpp"
+#include "duckdb/common/winapi.hpp"
 
 namespace duckdb {
 
@@ -24,85 +25,120 @@ class Value {
 
 public:
 	//! Create an empty NULL value of the specified type
-	Value(TypeId type = TypeId::INT32) : type(type), is_null(true) {
-	}
+	explicit Value(LogicalType type = LogicalType::SQLNULL);
+	//! Create an INTEGER value
+	Value(int32_t val); // NOLINT: Allow implicit conversion from `int32_t`
 	//! Create a BIGINT value
-	Value(int32_t val) : type(TypeId::INT32), is_null(false) {
-		value_.integer = val;
-	}
-	//! Create a BIGINT value
-	Value(int64_t val) : type(TypeId::INT64), is_null(false) {
-		value_.bigint = val;
-	}
+	Value(int64_t val); // NOLINT: Allow implicit conversion from `int64_t`
 	//! Create a FLOAT value
-	Value(float val) : type(TypeId::FLOAT), is_null(false) {
-		value_.float_ = val;
-	}
+	Value(float val); // NOLINT: Allow implicit conversion from `float`
 	//! Create a DOUBLE value
-	Value(double val) : type(TypeId::DOUBLE), is_null(false) {
-		value_.double_ = val;
-	}
+	Value(double val); // NOLINT: Allow implicit conversion from `double`
 	//! Create a VARCHAR value
-	Value(const char *val) : Value(val ? string(val) : string()) {
-	}
-	Value(string_t val);
+	Value(const char *val); // NOLINT: Allow implicit conversion from `const char *`
+	//! Create a NULL value
+	Value(std::nullptr_t val); // NOLINT: Allow implicit conversion from `nullptr_t`
 	//! Create a VARCHAR value
-	Value(string val);
+	Value(string_t val); // NOLINT: Allow implicit conversion from `string_t`
+	//! Create a VARCHAR value
+	Value(string val); // NOLINT: Allow implicit conversion from `string`
+
+	const LogicalType &type() const {
+		return type_;
+	}
 
 	//! Create the lowest possible value of a given type (numeric only)
-	static Value MinimumValue(TypeId type);
+	DUCKDB_API static Value MinimumValue(const LogicalType &type);
 	//! Create the highest possible value of a given type (numeric only)
-	static Value MaximumValue(TypeId type);
+	DUCKDB_API static Value MaximumValue(const LogicalType &type);
 	//! Create a Numeric value of the specified type with the specified value
-	static Value Numeric(TypeId id, int64_t value);
+	DUCKDB_API static Value Numeric(const LogicalType &type, int64_t value);
+	DUCKDB_API static Value Numeric(const LogicalType &type, hugeint_t value);
 
 	//! Create a tinyint Value from a specified value
-	static Value BOOLEAN(int8_t value);
+	DUCKDB_API static Value BOOLEAN(int8_t value);
 	//! Create a tinyint Value from a specified value
-	static Value TINYINT(int8_t value);
+	DUCKDB_API static Value TINYINT(int8_t value);
 	//! Create a smallint Value from a specified value
-	static Value SMALLINT(int16_t value);
+	DUCKDB_API static Value SMALLINT(int16_t value);
 	//! Create an integer Value from a specified value
-	static Value INTEGER(int32_t value);
+	DUCKDB_API static Value INTEGER(int32_t value);
 	//! Create a bigint Value from a specified value
-	static Value BIGINT(int64_t value);
+	DUCKDB_API static Value BIGINT(int64_t value);
+	//! Create an unsigned tinyint Value from a specified value
+	DUCKDB_API static Value UTINYINT(uint8_t value);
+	//! Create an unsigned smallint Value from a specified value
+	DUCKDB_API static Value USMALLINT(uint16_t value);
+	//! Create an unsigned integer Value from a specified value
+	DUCKDB_API static Value UINTEGER(uint32_t value);
+	//! Create an unsigned bigint Value from a specified value
+	DUCKDB_API static Value UBIGINT(uint64_t value);
+	//! Create a hugeint Value from a specified value
+	DUCKDB_API static Value HUGEINT(hugeint_t value);
 	//! Create a hash Value from a specified value
-	static Value HASH(hash_t value);
+	DUCKDB_API static Value HASH(hash_t value);
 	//! Create a pointer Value from a specified value
-	static Value POINTER(uintptr_t value);
+	DUCKDB_API static Value POINTER(uintptr_t value);
 	//! Create a date Value from a specified date
-	static Value DATE(date_t date);
+	DUCKDB_API static Value DATE(date_t date);
 	//! Create a date Value from a specified date
-	static Value DATE(int32_t year, int32_t month, int32_t day);
-	//! Create a time Value from a specified date
-	static Value TIME(int32_t hour, int32_t min, int32_t sec, int32_t msec);
+	DUCKDB_API static Value DATE(int32_t year, int32_t month, int32_t day);
+	//! Create a time Value from a specified time
+	DUCKDB_API static Value TIME(dtime_t time);
+	//! Create a time Value from a specified time
+	DUCKDB_API static Value TIME(int32_t hour, int32_t min, int32_t sec, int32_t micros);
 	//! Create a timestamp Value from a specified date/time combination
-	static Value TIMESTAMP(date_t date, dtime_t time);
+	DUCKDB_API static Value TIMESTAMP(date_t date, dtime_t time);
 	//! Create a timestamp Value from a specified timestamp
-	static Value TIMESTAMP(timestamp_t timestamp);
+	DUCKDB_API static Value TIMESTAMP(timestamp_t timestamp);
+	DUCKDB_API static Value TimestampNs(timestamp_t timestamp);
+	DUCKDB_API static Value TimestampMs(timestamp_t timestamp);
+	DUCKDB_API static Value TimestampSec(timestamp_t timestamp);
 	//! Create a timestamp Value from a specified timestamp in separate values
-	static Value TIMESTAMP(int32_t year, int32_t month, int32_t day, int32_t hour, int32_t min, int32_t sec,
-	                       int32_t msec);
-	static Value INTERVAL(int32_t months, int32_t days, int64_t msecs);
-	static Value INTERVAL(interval_t interval);
+	DUCKDB_API static Value TIMESTAMP(int32_t year, int32_t month, int32_t day, int32_t hour, int32_t min, int32_t sec,
+	                                  int32_t micros);
+	DUCKDB_API static Value INTERVAL(int32_t months, int32_t days, int64_t micros);
+	DUCKDB_API static Value INTERVAL(interval_t interval);
 
+	// Decimal values
+	DUCKDB_API static Value DECIMAL(int16_t value, uint8_t width, uint8_t scale);
+	DUCKDB_API static Value DECIMAL(int32_t value, uint8_t width, uint8_t scale);
+	DUCKDB_API static Value DECIMAL(int64_t value, uint8_t width, uint8_t scale);
+	DUCKDB_API static Value DECIMAL(hugeint_t value, uint8_t width, uint8_t scale);
 	//! Create a float Value from a specified value
-	static Value FLOAT(float value);
+	DUCKDB_API static Value FLOAT(float value);
 	//! Create a double Value from a specified value
-	static Value DOUBLE(double value);
+	DUCKDB_API static Value DOUBLE(double value);
 	//! Create a struct value with given list of entries
-	static Value STRUCT(child_list_t<Value> values);
+	DUCKDB_API static Value STRUCT(child_list_t<Value> values);
 	//! Create a list value with the given entries
-	static Value LIST(std::vector<Value> values);
+	DUCKDB_API static Value LIST(vector<Value> values);
+	//! Create an empty list with the specified type
+	DUCKDB_API static Value EMPTYLIST(LogicalType child_type);
+	//! Creat a map value from a (key, value) pair
+	DUCKDB_API static Value MAP(Value key, Value value);
 
-	//! Create a blob Value from a specified value
-	static Value BLOB(string data, bool must_cast = true);
+	//! Create a blob Value from a data pointer and a length: no bytes are interpreted
+	DUCKDB_API static Value BLOB(const_data_ptr_t data, idx_t len);
+	DUCKDB_API static Value BLOB_RAW(const string &data) {
+		return Value::BLOB((const_data_ptr_t)data.c_str(), data.size());
+	}
+	//! Creates a blob by casting a specified string to a blob (i.e. interpreting \x characters)
+	DUCKDB_API static Value BLOB(const string &data);
 
-	template <class T> T GetValue() {
+	template <class T>
+	T GetValue() const {
 		throw NotImplementedException("Unimplemented template type for Value::GetValue");
 	}
-	template <class T> static Value CreateValue(T value) {
+	template <class T>
+	static Value CreateValue(T value) {
 		throw NotImplementedException("Unimplemented template type for Value::CreateValue");
+	}
+	// Returns the internal value. Unlike GetValue(), this method does not perform casting, and assumes T matches the
+	// type of the value. Only use this if you know what you are doing.
+	template <class T>
+	T &GetValueUnsafe() {
+		throw NotImplementedException("Unimplemented template type for Value::GetValueUnsafe");
 	}
 
 	//! Return a copy of this value
@@ -111,53 +147,22 @@ public:
 	}
 
 	//! Convert this value to a string
-	string ToString() const;
-	//! Convert this value to a string, with the given display format
-	string ToString(SQLType type) const;
+	DUCKDB_API string ToString() const;
 
-	//! Cast this value to another type
-	Value CastAs(TypeId target_type, bool strict = false) const;
-	//! Cast this value to another type
-	Value CastAs(SQLType source_type, SQLType target_type, bool strict = false);
-	//! Tries to cast value to another type, throws exception if its not possible
-	bool TryCastAs(SQLType source_type, SQLType target_type, bool strict = false);
+	DUCKDB_API uintptr_t GetPointer() const;
 
-	//! The type of the value
-	TypeId type;
-	//! Whether or not the value is NULL
-	bool is_null;
-
-	SQLType GetSQLType() const {
-		return sql_type.id == SQLTypeId::INVALID ? SQLTypeFromInternalType(type) : sql_type;
-	}
-	void SetSQLType(SQLType sql_type) {
-		this->sql_type = sql_type;
-	}
-
-	//! The value of the object, if it is of a constant size Type
-	union Val {
-		int8_t boolean;
-		int8_t tinyint;
-		int16_t smallint;
-		int32_t integer;
-		int64_t bigint;
-		float float_;
-		double double_;
-		uintptr_t pointer;
-		uint64_t hash;
-		interval_t interval;
-	} value_;
-
-	//! The value of the object, if it is of a variable size type
-	string str_value;
-
-	child_list_t<Value> struct_value;
-	std::vector<Value> list_value;
+	//! Cast this value to another type, throws exception if its not possible
+	DUCKDB_API Value CastAs(const LogicalType &target_type, bool strict = false) const;
+	//! Tries to cast this value to another type, and stores the result in "new_value"
+	DUCKDB_API bool TryCastAs(const LogicalType &target_type, Value &new_value, string *error_message,
+	                          bool strict = false) const;
+	//! Tries to cast this value to another type, and stores the result in THIS value again
+	DUCKDB_API bool TryCastAs(const LogicalType &target_type, bool strict = false);
 
 	//! Serializes a Value to a stand-alone binary blob
-	void Serialize(Serializer &serializer);
+	DUCKDB_API void Serialize(Serializer &serializer);
 	//! Deserializes a Value from a blob
-	static Value Deserialize(Deserializer &source);
+	DUCKDB_API static Value Deserialize(Deserializer &source);
 
 	//===--------------------------------------------------------------------===//
 	// Numeric Operators
@@ -187,51 +192,190 @@ public:
 
 	static bool FloatIsValid(float value);
 	static bool DoubleIsValid(double value);
+	static bool StringIsValid(const char *str, idx_t length);
+	static bool StringIsValid(const string &str) {
+		return StringIsValid(str.c_str(), str.size());
+	}
+
+	template <class T>
+	static bool IsValid(T value) {
+		return true;
+	}
+
 	//! Returns true if the values are (approximately) equivalent. Note this is NOT the SQL equivalence. For this
 	//! function, NULL values are equivalent and floating point values that are close are equivalent.
-	static bool ValuesAreEqual(Value result_value, Value value);
+	static bool ValuesAreEqual(const Value &result_value, const Value &value);
 
 	friend std::ostream &operator<<(std::ostream &out, const Value &val) {
 		out << val.ToString();
 		return out;
 	}
-	void Print();
+	void Print() const;
 
 private:
-	SQLType sql_type = SQLType(SQLTypeId::INVALID);
+	//! The logical of the value
+	LogicalType type_;
+
+public:
+	//! Whether or not the value is NULL
+	bool is_null;
+
+	//! The value of the object, if it is of a constant size Type
+	union Val {
+		int8_t boolean;
+		int8_t tinyint;
+		int16_t smallint;
+		int32_t integer;
+		int64_t bigint;
+		uint8_t utinyint;
+		uint16_t usmallint;
+		uint32_t uinteger;
+		uint64_t ubigint;
+		hugeint_t hugeint;
+		float float_;
+		double double_;
+		uintptr_t pointer;
+		uint64_t hash;
+		date_t date;
+		dtime_t time;
+		timestamp_t timestamp;
+		interval_t interval;
+	} value_;
+
+	//! The value of the object, if it is of a variable size type
+	string str_value;
+
+	vector<Value> struct_value;
+	vector<Value> list_value;
 
 private:
-	template <class T> T GetValueInternal();
+	template <class T>
+	T GetValueInternal() const;
 	//! Templated helper function for casting
-	template <class DST, class OP> static DST _cast(const Value &v);
+	template <class DST, class OP>
+	static DST _cast(const Value &v);
 
 	//! Templated helper function for binary operations
 	template <class OP>
 	static void _templated_binary_operation(const Value &left, const Value &right, Value &result, bool ignore_null);
 
 	//! Templated helper function for boolean operations
-	template <class OP> static bool _templated_boolean_operation(const Value &left, const Value &right);
+	template <class OP>
+	static bool _templated_boolean_operation(const Value &left, const Value &right);
 };
 
-template <> Value Value::CreateValue(bool value);
-template <> Value Value::CreateValue(int8_t value);
-template <> Value Value::CreateValue(int16_t value);
-template <> Value Value::CreateValue(int32_t value);
-template <> Value Value::CreateValue(int64_t value);
-template <> Value Value::CreateValue(const char *value);
-template <> Value Value::CreateValue(string value);
-template <> Value Value::CreateValue(string_t value);
-template <> Value Value::CreateValue(float value);
-template <> Value Value::CreateValue(double value);
-template <> Value Value::CreateValue(Value value);
+template <>
+Value DUCKDB_API Value::CreateValue(bool value);
+template <>
+Value DUCKDB_API Value::CreateValue(uint8_t value);
+template <>
+Value DUCKDB_API Value::CreateValue(uint16_t value);
+template <>
+Value DUCKDB_API Value::CreateValue(uint32_t value);
+template <>
+Value DUCKDB_API Value::CreateValue(uint64_t value);
+template <>
+Value DUCKDB_API Value::CreateValue(int8_t value);
+template <>
+Value DUCKDB_API Value::CreateValue(int16_t value);
+template <>
+Value DUCKDB_API Value::CreateValue(int32_t value);
+template <>
+Value DUCKDB_API Value::CreateValue(int64_t value);
+template <>
+Value DUCKDB_API Value::CreateValue(hugeint_t value);
+template <>
+Value DUCKDB_API Value::CreateValue(date_t value);
+template <>
+Value DUCKDB_API Value::CreateValue(dtime_t value);
+template <>
+Value DUCKDB_API Value::CreateValue(timestamp_t value);
+template <>
+Value DUCKDB_API Value::CreateValue(const char *value);
+template <>
+Value DUCKDB_API Value::CreateValue(string value);
+template <>
+Value DUCKDB_API Value::CreateValue(string_t value);
+template <>
+Value DUCKDB_API Value::CreateValue(float value);
+template <>
+Value DUCKDB_API Value::CreateValue(double value);
+template <>
+Value DUCKDB_API Value::CreateValue(interval_t value);
+template <>
+Value DUCKDB_API Value::CreateValue(Value value);
 
-template <> bool Value::GetValue();
-template <> int8_t Value::GetValue();
-template <> int16_t Value::GetValue();
-template <> int32_t Value::GetValue();
-template <> int64_t Value::GetValue();
-template <> string Value::GetValue();
-template <> float Value::GetValue();
-template <> double Value::GetValue();
+template <>
+DUCKDB_API bool Value::GetValue() const;
+template <>
+DUCKDB_API int8_t Value::GetValue() const;
+template <>
+DUCKDB_API int16_t Value::GetValue() const;
+template <>
+DUCKDB_API int32_t Value::GetValue() const;
+template <>
+DUCKDB_API int64_t Value::GetValue() const;
+template <>
+DUCKDB_API uint8_t Value::GetValue() const;
+template <>
+DUCKDB_API uint16_t Value::GetValue() const;
+template <>
+DUCKDB_API uint32_t Value::GetValue() const;
+template <>
+DUCKDB_API uint64_t Value::GetValue() const;
+template <>
+DUCKDB_API hugeint_t Value::GetValue() const;
+template <>
+DUCKDB_API string Value::GetValue() const;
+template <>
+DUCKDB_API float Value::GetValue() const;
+template <>
+DUCKDB_API double Value::GetValue() const;
+template <>
+DUCKDB_API date_t Value::GetValue() const;
+template <>
+DUCKDB_API dtime_t Value::GetValue() const;
+template <>
+DUCKDB_API timestamp_t Value::GetValue() const;
+template <>
+DUCKDB_API interval_t Value::GetValue() const;
+
+template <>
+DUCKDB_API int8_t &Value::GetValueUnsafe();
+template <>
+DUCKDB_API int16_t &Value::GetValueUnsafe();
+template <>
+DUCKDB_API int32_t &Value::GetValueUnsafe();
+template <>
+DUCKDB_API int64_t &Value::GetValueUnsafe();
+template <>
+DUCKDB_API hugeint_t &Value::GetValueUnsafe();
+template <>
+DUCKDB_API uint8_t &Value::GetValueUnsafe();
+template <>
+DUCKDB_API uint16_t &Value::GetValueUnsafe();
+template <>
+DUCKDB_API uint32_t &Value::GetValueUnsafe();
+template <>
+DUCKDB_API uint64_t &Value::GetValueUnsafe();
+template <>
+DUCKDB_API string &Value::GetValueUnsafe();
+template <>
+DUCKDB_API float &Value::GetValueUnsafe();
+template <>
+DUCKDB_API double &Value::GetValueUnsafe();
+template <>
+DUCKDB_API date_t &Value::GetValueUnsafe();
+template <>
+DUCKDB_API dtime_t &Value::GetValueUnsafe();
+template <>
+DUCKDB_API timestamp_t &Value::GetValueUnsafe();
+template <>
+DUCKDB_API interval_t &Value::GetValueUnsafe();
+
+template <>
+DUCKDB_API bool Value::IsValid(float value);
+template <>
+DUCKDB_API bool Value::IsValid(double value);
 
 } // namespace duckdb

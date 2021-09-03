@@ -4,11 +4,10 @@
 #include "duckdb/planner/operator/logical_limit.hpp"
 #include "duckdb/planner/operator/logical_order.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
 unique_ptr<LogicalOperator> Binder::VisitQueryNode(BoundQueryNode &node, unique_ptr<LogicalOperator> root) {
-	assert(root);
+	D_ASSERT(root);
 	for (auto &mod : node.modifiers) {
 		switch (mod->type) {
 		case ResultModifierType::DISTINCT_MODIFIER: {
@@ -27,7 +26,8 @@ unique_ptr<LogicalOperator> Binder::VisitQueryNode(BoundQueryNode &node, unique_
 		}
 		case ResultModifierType::LIMIT_MODIFIER: {
 			auto &bound = (BoundLimitModifier &)*mod;
-			auto limit = make_unique<LogicalLimit>(bound.limit, bound.offset);
+			auto limit =
+			    make_unique<LogicalLimit>(bound.limit_val, bound.offset_val, move(bound.limit), move(bound.offset));
 			limit->AddChild(move(root));
 			root = move(limit);
 			break;
@@ -38,3 +38,5 @@ unique_ptr<LogicalOperator> Binder::VisitQueryNode(BoundQueryNode &node, unique_
 	}
 	return root;
 }
+
+} // namespace duckdb

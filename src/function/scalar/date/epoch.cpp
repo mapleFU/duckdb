@@ -5,37 +5,42 @@
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/common/vector_operations/unary_executor.hpp"
 
-using namespace std;
-
 namespace duckdb {
 
-static void epoch_function(DataChunk &input, ExpressionState &state, Vector &result) {
-	assert(input.column_count() == 1);
+struct EpochSecOperator {
+	template <class INPUT_TYPE, class RESULT_TYPE>
+	static RESULT_TYPE Operation(INPUT_TYPE input) {
+		return Timestamp::FromEpochSeconds(input);
+	}
+};
 
-	string output_buffer;
-	UnaryExecutor::Execute<int64_t, timestamp_t, true>(input.data[0], result, input.size(), [&](int64_t input) {
-		auto ms_per_day = (int64_t)60 * 60 * 24 * 1000;
-		auto date = Date::EpochToDate(input / 1000);
-		auto time = (dtime_t)(std::abs(input) % ms_per_day);
-		if (input < 0) { // for dates before 1970 time goes backwards
-			time = ms_per_day - time;
-			if (time > 0) {
-				// date needs to go one back if time is non-zero
-				date -= 1;
-			}
-			if (time == ms_per_day) {
-				time = 0;
-				date += 1;
-			}
-		}
-		return Timestamp::FromDatetime(date, time);
-	});
+static void EpochSecFunction(DataChunk &input, ExpressionState &state, Vector &result) {
+	D_ASSERT(input.ColumnCount() == 1);
+
+	UnaryExecutor::Execute<int64_t, timestamp_t, EpochSecOperator>(input.data[0], result, input.size());
+}
+
+struct EpochMillisOperator {
+	template <class INPUT_TYPE, class RESULT_TYPE>
+	static RESULT_TYPE Operation(INPUT_TYPE input) {
+		return Timestamp::FromEpochMs(input);
+	}
+};
+
+static void EpochMillisFunction(DataChunk &input, ExpressionState &state, Vector &result) {
+	D_ASSERT(input.ColumnCount() == 1);
+
+	UnaryExecutor::Execute<int64_t, timestamp_t, EpochMillisOperator>(input.data[0], result, input.size());
 }
 
 void EpochFun::RegisterFunction(BuiltinFunctions &set) {
 	ScalarFunctionSet epoch("epoch_ms");
-	epoch.AddFunction(ScalarFunction({SQLType::BIGINT}, SQLType::TIMESTAMP, epoch_function));
+	epoch.AddFunction(ScalarFunction({LogicalType::BIGINT}, LogicalType::TIMESTAMP, EpochMillisFunction));
 	set.AddFunction(epoch);
+	// to_timestamp is an alias from Postgres that converts the time in seconds to a timestamp
+	ScalarFunctionSet to_timestamp("to_timestamp");
+	to_timestamp.AddFunction(ScalarFunction({LogicalType::BIGINT}, LogicalType::TIMESTAMP, EpochSecFunction));
+	set.AddFunction(to_timestamp);
 }
 
 } // namespace duckdb

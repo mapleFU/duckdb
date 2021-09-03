@@ -26,20 +26,23 @@ TEST_CASE("Test using appender after connection is gone", "[api]") {
 	result = conn->Query("SELECT * FROM integers");
 	REQUIRE(CHECK_COLUMN(result, 0, {1}));
 
-	// removing the connection invalidates the appender
+	// removing the connection does not invalidate the appender
+	// the appender can still be used
 	conn.reset();
-	REQUIRE_THROWS(appender->BeginRow());
+	appender->BeginRow();
+	appender->Append<int32_t>(2);
+	appender->EndRow();
+
+	appender->Flush();
+
+	// clearing the appender clears the connection
 	appender.reset();
 
-	// now create the appender and connection again
+	// if we re-create the connection we can verify the data was actually inserted
 	conn = make_unique<Connection>(*db);
-	appender = make_unique<Appender>(*conn, "integers");
 
-	// removing the database invalidates both the connection and the appender
-	db.reset();
-
-	REQUIRE_FAIL(conn->Query("SELECT * FROM integers"));
-	REQUIRE_THROWS(appender->BeginRow());
+	result = conn->Query("SELECT * FROM integers ORDER BY i");
+	REQUIRE(CHECK_COLUMN(result, 0, {1, 2}));
 }
 
 TEST_CASE("Test appender and connection destruction order", "[api]") {
@@ -223,4 +226,31 @@ TEST_CASE("Test usage of appender interleaved with connection usage", "[api]") {
 
 	result = con.Query("SELECT * FROM t1");
 	REQUIRE(CHECK_COLUMN(result, 0, {1, 2}));
+}
+
+TEST_CASE("Test appender during stack unwinding", "[api]") {
+	// test appender exception
+	DuckDB db;
+	Connection con(db);
+
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE integers(i INTEGER)"));
+	{
+		Appender appender(con, "integers");
+		appender.AppendRow(1);
+
+		// closing the apender throws an exception, because we changed the table's type
+		REQUIRE_NO_FAIL(con.Query("ALTER TABLE integers ALTER i SET DATA TYPE VARCHAR"));
+		REQUIRE_THROWS(appender.Close());
+	}
+	REQUIRE_NO_FAIL(con.Query("DROP TABLE integers"));
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE integers(i INTEGER)"));
+	try {
+		// now we do the same, but we trigger the destructor of the appender during stack unwinding
+		Appender appender(con, "integers");
+		appender.AppendRow(1);
+
+		REQUIRE_NO_FAIL(con.Query("ALTER TABLE integers ALTER i SET DATA TYPE VARCHAR"));
+		{ throw std::runtime_error("Hello"); }
+	} catch (...) {
+	}
 }

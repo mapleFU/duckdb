@@ -2,56 +2,152 @@
 #include "duckdb/parser/expression/function_expression.hpp"
 #include "duckdb/parser/tableref/table_function_ref.hpp"
 #include "duckdb/planner/binder.hpp"
+#include "duckdb/parser/expression/columnref_expression.hpp"
+#include "duckdb/parser/expression/comparison_expression.hpp"
 #include "duckdb/planner/expression_binder/constant_binder.hpp"
+#include "duckdb/planner/expression_binder/select_binder.hpp"
+#include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/planner/tableref/bound_table_function.hpp"
+#include "duckdb/planner/tableref/bound_subqueryref.hpp"
+#include "duckdb/planner/query_node/bound_select_node.hpp"
 #include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/common/algorithm.hpp"
+#include "duckdb/parser/expression/subquery_expression.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
+
+bool Binder::BindFunctionParameters(vector<unique_ptr<ParsedExpression>> &expressions, vector<LogicalType> &arguments,
+                                    vector<Value> &parameters, unordered_map<string, Value> &named_parameters,
+                                    unique_ptr<BoundSubqueryRef> &subquery, string &error) {
+	bool seen_subquery = false;
+	for (auto &child : expressions) {
+		string parameter_name;
+
+		// hack to make named parameters work
+		if (child->type == ExpressionType::COMPARE_EQUAL) {
+			// comparison, check if the LHS is a columnref
+			auto &comp = (ComparisonExpression &)*child;
+			if (comp.left->type == ExpressionType::COLUMN_REF) {
+				auto &colref = (ColumnRefExpression &)*comp.left;
+				if (colref.table_name.empty()) {
+					parameter_name = colref.column_name;
+					child = move(comp.right);
+				}
+			}
+		}
+		if (child->type == ExpressionType::SUBQUERY) {
+			if (seen_subquery) {
+				error = "Table function can have at most one subquery parameter ";
+				return false;
+			}
+			auto binder = Binder::CreateBinder(this->context, this, true);
+			auto &se = (SubqueryExpression &)*child;
+			auto node = binder->BindNode(*se.subquery->node);
+			subquery = make_unique<BoundSubqueryRef>(move(binder), move(node));
+			seen_subquery = true;
+			arguments.emplace_back(LogicalTypeId::TABLE);
+			continue;
+		}
+		ConstantBinder binder(*this, context, "TABLE FUNCTION parameter");
+		LogicalType sql_type;
+		auto expr = binder.Bind(child, &sql_type);
+		if (!expr->IsFoldable()) {
+			error = "Table function requires a constant parameter";
+			return false;
+		}
+		auto constant = ExpressionExecutor::EvaluateScalar(*expr);
+		if (parameter_name.empty()) {
+			// unnamed parameter
+			if (!named_parameters.empty()) {
+				error = "Unnamed parameters cannot come after named parameters";
+				return false;
+			}
+			arguments.emplace_back(sql_type);
+			parameters.emplace_back(move(constant));
+		} else {
+			named_parameters[parameter_name] = move(constant);
+		}
+	}
+	return true;
+}
 
 unique_ptr<BoundTableRef> Binder::Bind(TableFunctionRef &ref) {
+	QueryErrorContext error_context(root_statement, ref.query_location);
 	auto bind_index = GenerateTableIndex();
 
-	assert(ref.function->type == ExpressionType::FUNCTION);
+	D_ASSERT(ref.function->type == ExpressionType::FUNCTION);
 	auto fexpr = (FunctionExpression *)ref.function.get();
-	// parse the parameters of the function
+
+	// evaluate the input parameters to the function
+	vector<LogicalType> arguments;
+	vector<Value> parameters;
+	unordered_map<string, Value> named_parameters;
+	unique_ptr<BoundSubqueryRef> subquery;
+	string error;
+	if (!BindFunctionParameters(fexpr->children, arguments, parameters, named_parameters, subquery, error)) {
+		throw BinderException(FormatError(ref, error));
+	}
+
+	// fetch the function from the catalog
+	auto &catalog = Catalog::GetCatalog(context);
 	auto function =
-	    Catalog::GetCatalog(context).GetEntry<TableFunctionCatalogEntry>(context, fexpr->schema, fexpr->function_name);
+	    catalog.GetEntry<TableFunctionCatalogEntry>(context, fexpr->schema, fexpr->function_name, false, error_context);
 
-	// check if the argument lengths match
-	if (fexpr->children.size() != function->function.arguments.size()) {
-		throw CatalogException("Function with name %s exists, but argument length does not match! "
-		                       "Expected %d arguments but got %d.",
-		                       fexpr->function_name.c_str(), (int)function->function.arguments.size(),
-		                       (int)fexpr->children.size());
+	// select the function based on the input parameters
+	idx_t best_function_idx = Function::BindFunction(function->name, function->functions, arguments, error);
+	if (best_function_idx == INVALID_INDEX) {
+		throw BinderException(FormatError(ref, error));
 	}
-	auto result = make_unique<BoundTableFunction>(function, bind_index);
-	// evalate the input parameters to the function
-	for (auto &child : fexpr->children) {
-		ConstantBinder binder(*this, context, "TABLE FUNCTION parameter");
-		SQLType sql_type;
-		auto expr = binder.Bind(child, &sql_type);
-		auto constant = ExpressionExecutor::EvaluateScalar(*expr);
-		constant.SetSQLType(sql_type);
-		result->parameters.push_back(constant);
+	auto &table_function = function->functions[best_function_idx];
+
+	// now check the named parameters
+	BindNamedParameters(table_function.named_parameters, named_parameters, error_context, table_function.name);
+
+	// cast the parameters to the type of the function
+	for (idx_t i = 0; i < arguments.size(); i++) {
+		if (table_function.arguments[i] != LogicalType::ANY && table_function.arguments[i] != LogicalType::TABLE &&
+		    table_function.arguments[i] != LogicalType::POINTER &&
+		    table_function.arguments[i].id() != LogicalTypeId::LIST) {
+			parameters[i] = parameters[i].CastAs(table_function.arguments[i]);
+		}
 	}
+
+	vector<LogicalType> input_table_types;
+	vector<string> input_table_names;
+
+	if (subquery) {
+		input_table_types = subquery->subquery->types;
+		input_table_names = subquery->subquery->names;
+	}
+
 	// perform the binding
-	result->bind_data = function->function.bind(context, result->parameters, result->return_types, result->names);
-	assert(result->return_types.size() == result->names.size());
-	assert(result->return_types.size() > 0);
-	vector<string> names;
-	// first push any column name aliases
-	for(idx_t i = 0; i < min<idx_t>(ref.column_name_alias.size(), result->names.size()); i++) {
-		names.push_back(ref.column_name_alias[i]);
+	unique_ptr<FunctionData> bind_data;
+	vector<LogicalType> return_types;
+	vector<string> return_names;
+	if (table_function.bind) {
+		bind_data = table_function.bind(context, parameters, named_parameters, input_table_types, input_table_names,
+		                                return_types, return_names);
 	}
-	// then fill up the remainder with the given result names
-	for(idx_t i = names.size(); i < result->names.size(); i++) {
-		names.push_back(result->names[i]);
+	D_ASSERT(return_types.size() == return_names.size());
+	D_ASSERT(return_types.size() > 0);
+	// overwrite the names with any supplied aliases
+	for (idx_t i = 0; i < ref.column_name_alias.size() && i < return_names.size(); i++) {
+		return_names[i] = ref.column_name_alias[i];
 	}
+	for (idx_t i = 0; i < return_names.size(); i++) {
+		if (return_names[i].empty()) {
+			return_names[i] = "C" + to_string(i);
+		}
+	}
+	auto get = make_unique<LogicalGet>(bind_index, table_function, move(bind_data), return_types, return_names);
 	// now add the table function to the bind context so its columns can be bound
-	bind_context.AddGenericBinding(bind_index, ref.alias.empty() ? fexpr->function_name : ref.alias, names,
-	                               result->return_types);
+	bind_context.AddTableFunction(bind_index, ref.alias.empty() ? fexpr->function_name : ref.alias, return_names,
+	                              return_types, *get);
+	if (subquery) {
+		get->children.push_back(Binder::CreatePlan(*subquery));
+	}
 
-	return move(result);
+	return make_unique_base<BoundTableRef, BoundTableFunction>(move(get));
 }
+
+} // namespace duckdb

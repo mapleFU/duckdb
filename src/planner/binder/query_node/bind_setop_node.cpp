@@ -9,8 +9,6 @@
 #include "duckdb/planner/query_node/bound_select_node.hpp"
 #include "duckdb/planner/expression_binder/order_binder.hpp"
 
-using namespace std;
-
 namespace duckdb {
 
 static void GatherAliases(BoundQueryNode &node, unordered_map<string, idx_t> &aliases,
@@ -22,7 +20,7 @@ static void GatherAliases(BoundQueryNode &node, unordered_map<string, idx_t> &al
 		GatherAliases(*setop.right, aliases, expressions);
 	} else {
 		// query node
-		assert(node.type == QueryNodeType::SELECT_NODE);
+		D_ASSERT(node.type == QueryNodeType::SELECT_NODE);
 		auto &select = (BoundSelectNode &)node;
 		// fill the alias lists
 		for (idx_t i = 0; i < select.names.size(); i++) {
@@ -65,18 +63,20 @@ unique_ptr<BoundQueryNode> Binder::BindNode(SetOperationNode &statement) {
 
 	// first recursively visit the set operations
 	// both the left and right sides have an independent BindContext and Binder
-	assert(statement.left);
-	assert(statement.right);
+	D_ASSERT(statement.left);
+	D_ASSERT(statement.right);
 
 	result->setop_index = GenerateTableIndex();
 
-	result->left_binder = make_unique<Binder>(context, this);
+	result->left_binder = Binder::CreateBinder(context, this);
+	result->left_binder->can_contain_nulls = true;
 	result->left = result->left_binder->BindNode(*statement.left);
 
-	result->right_binder = make_unique<Binder>(context, this);
+	result->right_binder = Binder::CreateBinder(context, this);
+	result->right_binder->can_contain_nulls = true;
 	result->right = result->right_binder->BindNode(*statement.right);
 
-	if (statement.modifiers.size() > 0) {
+	if (!statement.modifiers.empty()) {
 		// handle the ORDER BY/DISTINCT clauses
 
 		// we recursively visit the children of this node to extract aliases and expressions that can be referenced in
@@ -99,13 +99,18 @@ unique_ptr<BoundQueryNode> Binder::BindNode(SetOperationNode &statement) {
 
 	// now both sides have been bound we can resolve types
 	if (result->left->types.size() != result->right->types.size()) {
-		throw Exception("Set operations can only apply to expressions with the "
-		                "same number of result columns");
+		throw BinderException("Set operations can only apply to expressions with the "
+		                      "same number of result columns");
 	}
 
 	// figure out the types of the setop result by picking the max of both
 	for (idx_t i = 0; i < result->left->types.size(); i++) {
-		auto result_type = MaxSQLType(result->left->types[i], result->right->types[i]);
+		auto result_type = LogicalType::MaxLogicalType(result->left->types[i], result->right->types[i]);
+		if (!can_contain_nulls) {
+			if (ExpressionBinder::ContainsNullType(result_type)) {
+				result_type = ExpressionBinder::ExchangeNullType(result_type);
+			}
+		}
 		result->types.push_back(result_type);
 	}
 

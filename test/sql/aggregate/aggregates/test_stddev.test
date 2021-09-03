@@ -8,6 +8,16 @@ create table stddev_test(val integer, grp integer)
 statement ok
 insert into stddev_test values (42, 1), (43, 1), (42, 2), (1000, 2), (NULL, 1), (NULL, 3)
 
+query I
+SELECT stddev_samp(1)
+----
+NULL
+
+query I
+SELECT var_samp(1)
+----
+NULL
+
 # stddev_samp
 query R
 select round(stddev_samp(val), 1) from stddev_test
@@ -63,6 +73,11 @@ select round(var_samp(val), 1) from stddev_test
 229281.600000
 
 query R
+select round(variance(val), 1) from stddev_test
+----
+229281.600000
+
+query R
 select round(var_samp(val), 1) from stddev_test  where val is not null
 ----
 229281.600000
@@ -104,3 +119,28 @@ select grp, sum(val), round(var_pop(val), 2), min(val) from stddev_test where va
 1	85.000000	0.250000	42
 2	1042.000000	229441.000000	42
 
+statement ok
+create table stddev_test_alias(val integer, grp integer)
+
+statement ok
+insert into stddev_test_alias values (42, 1), (43, 1), (42, 2), (1000, 2), (NULL, 1), (NULL, 3)
+
+# stddev_samp
+query R
+select round(stddev(val), 1) from stddev_test_alias
+----
+478.800000
+
+query I
+select stddev(0) from range(10)
+----
+0
+
+statement error
+select stddev(a) from (values (1e301), (-1e301)) tbl(a)
+
+statement error
+select var_samp(a) from (values (1e301), (-1e301)) tbl(a)
+
+statement error
+select var_pop(a) from (values (1e301), (-1e301)) tbl(a)

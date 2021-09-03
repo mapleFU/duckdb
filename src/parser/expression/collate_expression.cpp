@@ -5,9 +5,9 @@
 
 namespace duckdb {
 
-CollateExpression::CollateExpression(string collation, unique_ptr<ParsedExpression> child)
-    : ParsedExpression(ExpressionType::COLLATE, ExpressionClass::COLLATE), collation(collation) {
-	assert(child);
+CollateExpression::CollateExpression(string collation_p, unique_ptr<ParsedExpression> child)
+    : ParsedExpression(ExpressionType::COLLATE, ExpressionClass::COLLATE), collation(move(collation_p)) {
+	D_ASSERT(child);
 	this->child = move(child);
 }
 

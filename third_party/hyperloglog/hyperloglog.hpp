@@ -1,22 +1,21 @@
 //===----------------------------------------------------------------------===//
 //                         DuckDB
 //
-// third_party/hyperloglog/hyperloglog.h
+// third_party/hyperloglog/hyperloglog.hpp
 //
 //
 //===----------------------------------------------------------------------===//
 
 #pragma once
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 #include <string.h>
+#include <stdint.h>
+
+namespace duckdb_hll {
 
 /* Error codes */
-#define C_OK                    0
-#define C_ERR                   -1
+#define HLL_C_OK                    0
+#define HLL_C_ERR                   -1
 
 typedef struct {
     void *ptr;
@@ -33,6 +32,6 @@ int hll_count(robj *o, size_t *result);
 //! Merge hll_count HyperLogLog objects into a single one. Returns NULL on failure, or the new HLL object on success.
 robj *hll_merge(robj **hlls, size_t hll_count);
 
-#ifdef __cplusplus
+uint64_t MurmurHash64A (const void * key, int len, unsigned int seed);
+
 }
-#endif

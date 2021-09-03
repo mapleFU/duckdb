@@ -6,8 +6,7 @@
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
 MoveConstantsRule::MoveConstantsRule(ExpressionRewriter &rewriter) : Rule(rewriter) {
 	auto op = make_unique<ComparisonExpressionMatcher>();
@@ -18,7 +17,7 @@ MoveConstantsRule::MoveConstantsRule(ExpressionRewriter &rewriter) : Rule(rewrit
 	// we handle multiplication, addition and subtraction because those are "easy"
 	// integer division makes the division case difficult
 	// e.g. [x / 2 = 3] means [x = 6 OR x = 7] because of truncation -> no clean rewrite rules
-	arithmetic->function = make_unique<ManyFunctionMatcher>(unordered_set<string>{"+", "-", "*"});
+	arithmetic->function = make_unique<ManyFunctionMatcher>(unordered_set<string> {"+", "-", "*"});
 	// we match only on integral numeric types
 	arithmetic->type = make_unique<IntegerTypeMatcher>();
 	arithmetic->matchers.push_back(make_unique<ConstantExpressionMatcher>());
@@ -34,6 +33,12 @@ unique_ptr<Expression> MoveConstantsRule::Apply(LogicalOperator &op, vector<Expr
 	auto outer_constant = (BoundConstantExpression *)bindings[1];
 	auto arithmetic = (BoundFunctionExpression *)bindings[2];
 	auto inner_constant = (BoundConstantExpression *)bindings[3];
+	if (!arithmetic->return_type.IsNumeric()) {
+		return nullptr;
+	}
+	if (inner_constant->value.is_null || outer_constant->value.is_null) {
+		return make_unique<BoundConstantExpression>(Value(comparison->return_type));
+	}
 
 	int arithmetic_child_index = arithmetic->children[0].get() == inner_constant ? 1 : 0;
 	auto &op_type = arithmetic->function.name;
@@ -58,7 +63,7 @@ unique_ptr<Expression> MoveConstantsRule::Apply(LogicalOperator &op, vector<Expr
 			comparison->type = FlipComparisionExpression(comparison->type);
 		}
 	} else {
-		assert(op_type == "*");
+		D_ASSERT(op_type == "*");
 		// [x * 2 COMP 10] OR [2 * x COMP 10]
 		// order does not matter in multiplication:
 		// change right side to 10/2 (outer_constant / inner_constant)
@@ -94,3 +99,5 @@ unique_ptr<Expression> MoveConstantsRule::Apply(LogicalOperator &op, vector<Expr
 	changes_made = true;
 	return nullptr;
 }
+
+} // namespace duckdb

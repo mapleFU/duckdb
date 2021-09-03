@@ -14,6 +14,7 @@
 #include "duckdb.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "test_helpers.hpp"
+#include "duckdb/main/query_profiler.hpp"
 
 namespace duckdb {
 
@@ -25,6 +26,9 @@ struct DuckDBBenchmarkState : public BenchmarkState {
 
 	DuckDBBenchmarkState(string path) : db(path.empty() ? nullptr : path.c_str()), conn(db) {
 		conn.EnableProfiling();
+		auto &instance = BenchmarkRunner::GetInstance();
+		auto res = conn.Query("PRAGMA threads=" + to_string(instance.threads));
+		D_ASSERT(res->success);
 	}
 	virtual ~DuckDBBenchmarkState() {
 	}
@@ -41,15 +45,11 @@ public:
 
 	//! Load data into DuckDB
 	virtual void Load(DuckDBBenchmarkState *state) = 0;
-	//! A single query to run against the database
-	virtual string GetQuery() {
-		return string();
-	}
 	//! Run a bunch of queries, only called if GetQuery() returns an empty string
 	virtual void RunBenchmark(DuckDBBenchmarkState *state) {
 	}
 	//! This function gets called after the GetQuery() method
-	virtual void Cleanup(DuckDBBenchmarkState *state){};
+	virtual void Cleanup(DuckDBBenchmarkState *state) {};
 	//! Verify a result
 	virtual string VerifyResult(QueryResult *result) = 0;
 	//! Whether or not the benchmark is performed on an in-memory database
@@ -71,14 +71,14 @@ public:
 		return make_unique<DuckDBBenchmarkState>(GetDatabasePath());
 	}
 
-	unique_ptr<BenchmarkState> Initialize() override {
+	unique_ptr<BenchmarkState> Initialize(BenchmarkConfiguration &config) override {
 		auto state = CreateBenchmarkState();
 		Load(state.get());
 		return move(state);
 	}
 
-	void Run(BenchmarkState *state_) override {
-		auto state = (DuckDBBenchmarkState *)state_;
+	void Run(BenchmarkState *state_p) override {
+		auto state = (DuckDBBenchmarkState *)state_p;
 		string query = GetQuery();
 		if (query.empty()) {
 			RunBenchmark(state);
@@ -87,24 +87,24 @@ public:
 		}
 	}
 
-	void Cleanup(BenchmarkState *state_) override {
-		auto state = (DuckDBBenchmarkState *)state_;
+	void Cleanup(BenchmarkState *state_p) override {
+		auto state = (DuckDBBenchmarkState *)state_p;
 		Cleanup(state);
 	}
 
-	string Verify(BenchmarkState *state_) override {
-		auto state = (DuckDBBenchmarkState *)state_;
+	string Verify(BenchmarkState *state_p) override {
+		auto state = (DuckDBBenchmarkState *)state_p;
 		return VerifyResult(state->result.get());
 	}
 
-	string GetLogOutput(BenchmarkState *state_) override {
-		auto state = (DuckDBBenchmarkState *)state_;
-		return state->conn.context->profiler.ToJSON();
+	string GetLogOutput(BenchmarkState *state_p) override {
+		auto state = (DuckDBBenchmarkState *)state_p;
+		return state->conn.context->profiler->ToJSON();
 	}
 
 	//! Interrupt the benchmark because of a timeout
-	void Interrupt(BenchmarkState *state_) override {
-		auto state = (DuckDBBenchmarkState *)state_;
+	void Interrupt(BenchmarkState *state_p) override {
+		auto state = (DuckDBBenchmarkState *)state_p;
 		state->conn.Interrupt();
 	}
 };

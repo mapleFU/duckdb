@@ -3,8 +3,7 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/serializer.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
 SubqueryExpression::SubqueryExpression()
     : ParsedExpression(ExpressionType::SUBQUERY, ExpressionClass::SUBQUERY), subquery_type(SubqueryType::INVALID),
@@ -25,7 +24,7 @@ bool SubqueryExpression::Equals(const SubqueryExpression *a, const SubqueryExpre
 unique_ptr<ParsedExpression> SubqueryExpression::Copy() const {
 	auto copy = make_unique<SubqueryExpression>();
 	copy->CopyProperties(*this);
-	copy->subquery = subquery->Copy();
+	copy->subquery = unique_ptr_cast<SQLStatement, SelectStatement>(subquery->Copy());
 	copy->subquery_type = subquery_type;
 	copy->child = child ? child->Copy() : nullptr;
 	copy->comparison_type = comparison_type;
@@ -42,7 +41,7 @@ void SubqueryExpression::Serialize(Serializer &serializer) {
 
 unique_ptr<ParsedExpression> SubqueryExpression::Deserialize(ExpressionType type, Deserializer &source) {
 	auto subquery_type = source.Read<SubqueryType>();
-	auto subquery = QueryNode::Deserialize(source);
+	auto subquery = SelectStatement::Deserialize(source);
 
 	auto expression = make_unique<SubqueryExpression>();
 	expression->subquery_type = subquery_type;
@@ -51,3 +50,5 @@ unique_ptr<ParsedExpression> SubqueryExpression::Deserialize(ExpressionType type
 	expression->comparison_type = source.Read<ExpressionType>();
 	return move(expression);
 }
+
+} // namespace duckdb

@@ -16,10 +16,10 @@ namespace duckdb {
 //! the tree will always return an empty result.
 class LogicalEmptyResult : public LogicalOperator {
 public:
-	LogicalEmptyResult(unique_ptr<LogicalOperator> op);
+	explicit LogicalEmptyResult(unique_ptr<LogicalOperator> op);
 
 	//! The set of return types of the empty result
-	vector<TypeId> return_types;
+	vector<LogicalType> return_types;
 	//! The columns that would be bound at this location (if the subtree was not optimized away)
 	vector<ColumnBinding> bindings;
 

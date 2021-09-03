@@ -3,8 +3,7 @@
 #include "duckdb/common/serializer.hpp"
 #include "duckdb/parser/expression_util.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
 ConjunctionExpression::ConjunctionExpression(ExpressionType type)
     : ParsedExpression(type, ExpressionClass::CONJUNCTION) {
@@ -49,10 +48,11 @@ bool ConjunctionExpression::Equals(const ConjunctionExpression *a, const Conjunc
 }
 
 unique_ptr<ParsedExpression> ConjunctionExpression::Copy() const {
-	auto copy = make_unique<ConjunctionExpression>(type);
+	vector<unique_ptr<ParsedExpression>> copy_children;
 	for (auto &expr : children) {
-		copy->children.push_back(expr->Copy());
+		copy_children.push_back(expr->Copy());
 	}
+	auto copy = make_unique<ConjunctionExpression>(type, move(copy_children));
 	copy->CopyProperties(*this);
 	return move(copy);
 }
@@ -67,3 +67,5 @@ unique_ptr<ParsedExpression> ConjunctionExpression::Deserialize(ExpressionType t
 	source.ReadList<ParsedExpression>(result->children);
 	return move(result);
 }
+
+} // namespace duckdb

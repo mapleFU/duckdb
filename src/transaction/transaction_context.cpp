@@ -4,13 +4,9 @@
 #include "duckdb/transaction/transaction.hpp"
 #include "duckdb/transaction/transaction_manager.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
 TransactionContext::~TransactionContext() {
-	if (is_invalidated) {
-		return;
-	}
 	if (current_transaction) {
 		try {
 			Rollback();
@@ -20,25 +16,44 @@ TransactionContext::~TransactionContext() {
 }
 
 void TransactionContext::BeginTransaction() {
-	assert(!current_transaction); // cannot start a transaction within a transaction
-	current_transaction = transaction_manager.StartTransaction();
+	if (current_transaction) {
+		throw TransactionException("cannot start a transaction within a transaction");
+	}
+	current_transaction = transaction_manager.StartTransaction(context);
 }
 
 void TransactionContext::Commit() {
-	assert(current_transaction); // cannot commit if there is no active transaction
+	if (!current_transaction) {
+		throw TransactionException("failed to commit: no transaction active");
+	}
 	auto transaction = current_transaction;
 	SetAutoCommit(true);
 	current_transaction = nullptr;
-	string error = transaction_manager.CommitTransaction(transaction);
+	string error = transaction_manager.CommitTransaction(context, transaction);
 	if (!error.empty()) {
-		throw TransactionException("Failed to commit: %s", error.c_str());
+		throw TransactionException("Failed to commit: %s", error);
+	}
+}
+
+void TransactionContext::SetAutoCommit(bool value) {
+	auto_commit = value;
+	if (!auto_commit && !current_transaction) {
+		BeginTransaction();
 	}
 }
 
 void TransactionContext::Rollback() {
-	assert(current_transaction); // cannot rollback if there is no active transaction
+	if (!current_transaction) {
+		throw TransactionException("failed to rollback: no transaction active");
+	}
 	auto transaction = current_transaction;
-	SetAutoCommit(true);
-	current_transaction = nullptr;
+	ClearTransaction();
 	transaction_manager.RollbackTransaction(transaction);
 }
+
+void TransactionContext::ClearTransaction() {
+	SetAutoCommit(true);
+	current_transaction = nullptr;
+}
+
+} // namespace duckdb

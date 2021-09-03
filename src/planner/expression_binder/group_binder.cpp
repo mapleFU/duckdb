@@ -4,9 +4,9 @@
 #include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/parser/query_node/select_node.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
+#include "duckdb/common/to_string.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
 GroupBinder::GroupBinder(Binder &binder, ClientContext &context, SelectNode &node, idx_t group_index,
                          unordered_map<string, idx_t> &alias_map, unordered_map<string, idx_t> &group_alias_map)
@@ -14,7 +14,8 @@ GroupBinder::GroupBinder(Binder &binder, ClientContext &context, SelectNode &nod
       group_index(group_index) {
 }
 
-BindResult GroupBinder::BindExpression(ParsedExpression &expr, idx_t depth, bool root_expression) {
+BindResult GroupBinder::BindExpression(unique_ptr<ParsedExpression> *expr_ptr, idx_t depth, bool root_expression) {
+	auto &expr = **expr_ptr;
 	if (root_expression && depth == 0) {
 		switch (expr.expression_class) {
 		case ExpressionClass::COLUMN_REF:
@@ -31,7 +32,7 @@ BindResult GroupBinder::BindExpression(ParsedExpression &expr, idx_t depth, bool
 	case ExpressionClass::WINDOW:
 		return BindResult("GROUP BY clause cannot contain window functions!");
 	default:
-		return ExpressionBinder::BindExpression(expr, depth);
+		return ExpressionBinder::BindExpression(expr_ptr, depth);
 	}
 }
 
@@ -46,7 +47,7 @@ BindResult GroupBinder::BindSelectRef(idx_t entry) {
 		// e.g. GROUP BY k, k or GROUP BY 1, 1
 		// in this case, we can just replace the grouping with a constant since the second grouping has no effect
 		// (the constant grouping will be optimized out later)
-		return BindResult(make_unique<BoundConstantExpression>(Value(42)), SQLType::INTEGER);
+		return BindResult(make_unique<BoundConstantExpression>(Value::INTEGER(42)));
 	}
 	if (entry >= node.select_list.size()) {
 		throw BinderException("GROUP BY term out of range - should be between 1 and %d", (int)node.select_list.size());
@@ -55,19 +56,18 @@ BindResult GroupBinder::BindSelectRef(idx_t entry) {
 	unbound_expression = node.select_list[entry]->Copy();
 	// move the expression that this refers to here and bind it
 	auto select_entry = move(node.select_list[entry]);
-	SQLType group_type;
-	auto binding = Bind(select_entry, &group_type, false);
+	auto binding = Bind(select_entry, nullptr, false);
 	// now replace the original expression in the select list with a reference to this group
 	group_alias_map[to_string(entry)] = bind_index;
 	node.select_list[entry] = make_unique<ColumnRefExpression>(to_string(entry));
 	// insert into the set of used aliases
 	used_aliases.insert(entry);
-	return BindResult(move(binding), group_type);
+	return BindResult(move(binding));
 }
 
 BindResult GroupBinder::BindConstant(ConstantExpression &constant) {
 	// constant as root expression
-	if (!TypeIsIntegral(constant.value.type)) {
+	if (!constant.value.type().IsIntegral()) {
 		// non-integral expression, we just leave the constant here.
 		return ExpressionBinder::BindExpression(constant, 0);
 	}
@@ -104,3 +104,5 @@ BindResult GroupBinder::BindColumnRef(ColumnRefExpression &colref) {
 	}
 	return result;
 }
+
+} // namespace duckdb

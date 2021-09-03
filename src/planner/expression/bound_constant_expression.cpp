@@ -3,23 +3,23 @@
 #include "duckdb/common/types/hash.hpp"
 #include "duckdb/common/value_operations/value_operations.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
-BoundConstantExpression::BoundConstantExpression(Value value)
-    : Expression(ExpressionType::VALUE_CONSTANT, ExpressionClass::BOUND_CONSTANT, value.type), value(value) {
+BoundConstantExpression::BoundConstantExpression(Value value_p)
+    : Expression(ExpressionType::VALUE_CONSTANT, ExpressionClass::BOUND_CONSTANT, value_p.type()),
+      value(move(value_p)) {
 }
 
 string BoundConstantExpression::ToString() const {
-	return value.ToString(value.GetSQLType());
+	return value.ToString();
 }
 
-bool BoundConstantExpression::Equals(const BaseExpression *other_) const {
-	if (!BaseExpression::Equals(other_)) {
+bool BoundConstantExpression::Equals(const BaseExpression *other_p) const {
+	if (!Expression::Equals(other_p)) {
 		return false;
 	}
-	auto other = (BoundConstantExpression *)other_;
-	return value == other->value;
+	auto other = (BoundConstantExpression *)other_p;
+	return !ValueOperations::DistinctFrom(value, other->value);
 }
 
 hash_t BoundConstantExpression::Hash() const {
@@ -32,3 +32,5 @@ unique_ptr<Expression> BoundConstantExpression::Copy() {
 	copy->CopyProperties(*this);
 	return move(copy);
 }
+
+} // namespace duckdb

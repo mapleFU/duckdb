@@ -3,12 +3,10 @@
 #include "duckdb/common/types/hash.hpp"
 #include "duckdb/common/string_util.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
-BoundUnnestExpression::BoundUnnestExpression(SQLType sql_return_type)
-    : Expression(ExpressionType::BOUND_UNNEST, ExpressionClass::BOUND_UNNEST, GetInternalType(sql_return_type)),
-      sql_return_type(sql_return_type) {
+BoundUnnestExpression::BoundUnnestExpression(LogicalType return_type)
+    : Expression(ExpressionType::BOUND_UNNEST, ExpressionClass::BOUND_UNNEST, move(return_type)) {
 }
 
 bool BoundUnnestExpression::IsFoldable() const {
@@ -24,11 +22,11 @@ hash_t BoundUnnestExpression::Hash() const {
 	return CombineHash(result, duckdb::Hash("unnest"));
 }
 
-bool BoundUnnestExpression::Equals(const BaseExpression *other_) const {
-	if (!BaseExpression::Equals(other_)) {
+bool BoundUnnestExpression::Equals(const BaseExpression *other_p) const {
+	if (!Expression::Equals(other_p)) {
 		return false;
 	}
-	auto other = (BoundUnnestExpression *)other_;
+	auto other = (BoundUnnestExpression *)other_p;
 	if (!Expression::Equals(child.get(), other->child.get())) {
 		return false;
 	}
@@ -36,7 +34,9 @@ bool BoundUnnestExpression::Equals(const BaseExpression *other_) const {
 }
 
 unique_ptr<Expression> BoundUnnestExpression::Copy() {
-	auto copy = make_unique<BoundUnnestExpression>(sql_return_type);
+	auto copy = make_unique<BoundUnnestExpression>(return_type);
 	copy->child = child->Copy();
 	return move(copy);
 }
+
+} // namespace duckdb

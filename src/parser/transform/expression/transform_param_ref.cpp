@@ -2,19 +2,18 @@
 #include "duckdb/parser/transformer.hpp"
 #include "duckdb/common/algorithm.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
-unique_ptr<ParsedExpression> Transformer::TransformParamRef(PGParamRef *node) {
-	if (!node) {
-		return nullptr;
-	}
+unique_ptr<ParsedExpression> Transformer::TransformParamRef(duckdb_libpgquery::PGParamRef *node, idx_t depth) {
+	D_ASSERT(node);
 	auto expr = make_unique<ParameterExpression>();
 	if (node->number == 0) {
 		expr->parameter_nr = ParamCount() + 1;
 	} else {
 		expr->parameter_nr = node->number;
 	}
-	SetParamCount(max(ParamCount(), expr->parameter_nr));
+	SetParamCount(MaxValue<idx_t>(ParamCount(), expr->parameter_nr));
 	return move(expr);
 }
+
+} // namespace duckdb

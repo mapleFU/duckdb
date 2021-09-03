@@ -4,21 +4,7 @@
 
 # age without second timestamp compares to NOW()
 statement ok
-BEGIN TRANSACTION
-
-statement ok
-CREATE TABLE t1 AS SELECT AGE(TIMESTAMP '1957-06-13') t
-
-statement ok
-INSERT INTO t1 SELECT AGE(TIMESTAMP '1957-06-13');
-
-query I
-SELECT COUNT(DISTINCT t) FROM t1
-----
-1
-
-statement ok
-ROLLBACK
+SELECT AGE(TIMESTAMP '1957-06-13') t
 
 query T
 SELECT AGE(TIMESTAMP '2001-04-10', TIMESTAMP '1957-06-13');
@@ -140,3 +126,30 @@ query T
 SELECT AGE(NULL, TIMESTAMP '1957-06-13');
 ----
 NULL
+
+# date can also be used with AGE
+# hopefully the clock is not off by more than a century
+query T
+SELECT INTERVAL '1' DAY < AGE(DATE '1900-06-13');
+----
+1
+
+query T
+SELECT AGE(DATE '1900-01-01', DATE '1950-01-01');
+----
+-50 years
+
+query I
+select age(timestamp '1992-01-01 01:01:02.400', timestamp '1992-01-01 01:01:02.200');
+----
+00:00:00.2
+
+query I
+select age(timestamp '1992-01-01 01:01:02.200', timestamp '1992-01-01 01:01:02.400');
+----
+-00:00:00.2
+
+query I
+select age(timestamp '1992-01-01 01:01:01.400', timestamp '1992-01-01 01:01:02.200');
+----
+-00:00:00.8

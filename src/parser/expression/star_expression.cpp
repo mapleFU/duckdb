@@ -1,7 +1,6 @@
 #include "duckdb/parser/expression/star_expression.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
 StarExpression::StarExpression() : ParsedExpression(ExpressionType::STAR, ExpressionClass::STAR) {
 }
@@ -19,3 +18,5 @@ unique_ptr<ParsedExpression> StarExpression::Copy() const {
 unique_ptr<ParsedExpression> StarExpression::Deserialize(ExpressionType type, Deserializer &source) {
 	return make_unique<StarExpression>();
 }
+
+} // namespace duckdb

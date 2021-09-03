@@ -1,5 +1,7 @@
 #include "catch.hpp"
 #include "test_helpers.hpp"
+#include "duckdb/parser/parser.hpp"
+#include "duckdb/planner/logical_operator.hpp"
 
 #include <chrono>
 #include <thread>
@@ -16,7 +18,8 @@ TEST_CASE("Test using connection after database is gone", "[api]") {
 	// destroy the database
 	db.reset();
 	// try to use the connection
-	REQUIRE_FAIL(conn->Query("SELECT 42"));
+	// it still works: the database remains until all connections are destroyed
+	REQUIRE_NO_FAIL(conn->Query("SELECT 42"));
 
 	// now try it with an open transaction
 	db = make_unique<DuckDB>(nullptr);
@@ -28,7 +31,7 @@ TEST_CASE("Test using connection after database is gone", "[api]") {
 
 	db.reset();
 
-	REQUIRE_FAIL(conn->Query("SELECT 42"));
+	REQUIRE_NO_FAIL(conn->Query("SELECT 42"));
 }
 
 TEST_CASE("Test destroying connections with open transactions", "[api]") {
@@ -65,12 +68,13 @@ TEST_CASE("Test closing database during long running query", "[api]") {
 	// wait a little bit
 	std::this_thread::sleep_for(std::chrono::milliseconds(100));
 	// destroy the database
+	conn->Interrupt();
 	db.reset();
 	// wait for the thread
 	background_thread.join();
 	REQUIRE(correct);
 	// try to use the connection
-	REQUIRE_FAIL(conn->Query("SELECT 42"));
+	REQUIRE_NO_FAIL(conn->Query("SELECT 42"));
 }
 
 TEST_CASE("Test closing result after database is gone", "[api]") {
@@ -92,6 +96,7 @@ TEST_CASE("Test closing result after database is gone", "[api]") {
 	// destroy the database
 	db.reset();
 	conn.reset();
+	REQUIRE(CHECK_COLUMN(streaming_result, 0, {42}));
 	streaming_result.reset();
 }
 
@@ -100,12 +105,18 @@ TEST_CASE("Test closing database with open prepared statements", "[api]") {
 	auto conn = make_unique<Connection>(*db);
 
 	auto p1 = conn->Prepare("CREATE TABLE a (i INTEGER)");
-	p1->Execute();
+	REQUIRE_NO_FAIL(p1->Execute());
 	auto p2 = conn->Prepare("INSERT INTO a VALUES (42)");
-	p2->Execute();
+	REQUIRE_NO_FAIL(p2->Execute());
 
 	db.reset();
 	conn.reset();
+
+	// the prepared statements are still valid
+	// the database is only destroyed when the prepared statements are destroyed
+	REQUIRE_NO_FAIL(p2->Execute());
+	p1.reset();
+	p2.reset();
 }
 
 static void parallel_query(Connection *conn, bool *correct, size_t threadnr) {
@@ -191,12 +202,77 @@ TEST_CASE("Test multiple result sets", "[api]") {
 	REQUIRE(!result->next);
 }
 
+TEST_CASE("Test streaming API errors", "[api]") {
+	unique_ptr<QueryResult> result, result2;
+	DuckDB db(nullptr);
+	Connection con(db);
+	con.EnableQueryVerification();
+
+	// multiple streaming result
+	result = con.SendQuery("SELECT 42;");
+	result2 = con.SendQuery("SELECT 42;");
+	// "result" is invalidated
+	REQUIRE_THROWS(CHECK_COLUMN(result, 0, {42}));
+	// "result2" we can read
+	REQUIRE(CHECK_COLUMN(result2, 0, {42}));
+
+	// streaming result followed by non-streaming result
+	result = con.SendQuery("SELECT 42;");
+	result2 = con.Query("SELECT 42;");
+	// "result" is invalidated
+	REQUIRE_THROWS(CHECK_COLUMN(result, 0, {42}));
+	// "result2" we can read
+	REQUIRE(CHECK_COLUMN(result2, 0, {42}));
+
+	// error in query
+	result = con.SendQuery("SELECT 'hello'::INT;");
+	REQUIRE(!result->ToString().empty());
+	REQUIRE(result->type == QueryResultType::MATERIALIZED_RESULT);
+	REQUIRE_FAIL(result);
+
+	// error in stream that only happens after fetching
+	result = con.SendQuery(
+	    "SELECT x::INT FROM (SELECT x::VARCHAR x FROM range(10) tbl(x) UNION ALL SELECT 'hello' x) tbl(x);");
+	while (result->success) {
+		auto chunk = result->Fetch();
+		if (!chunk || chunk->size() == 0) {
+			break;
+		}
+	}
+	REQUIRE(!result->ToString().empty());
+	REQUIRE_FAIL(result);
+
+	// same query but call Materialize
+	result = con.SendQuery(
+	    "SELECT x::INT FROM (SELECT x::VARCHAR x FROM range(10) tbl(x) UNION ALL SELECT 'hello' x) tbl(x);");
+	REQUIRE(!result->ToString().empty());
+	result = ((StreamQueryResult &)*result).Materialize();
+	REQUIRE_FAIL(result);
+
+	// same query but call materialize after fetching
+	result = con.SendQuery(
+	    "SELECT x::INT FROM (SELECT x::VARCHAR x FROM range(10) tbl(x) UNION ALL SELECT 'hello' x) tbl(x);");
+	while (result->success) {
+		auto chunk = result->Fetch();
+		if (!chunk || chunk->size() == 0) {
+			break;
+		}
+	}
+	REQUIRE(!result->ToString().empty());
+	result = ((StreamQueryResult &)*result).Materialize();
+	REQUIRE_FAIL(result);
+}
+
 TEST_CASE("Test fetch API", "[api]") {
 	DuckDB db(nullptr);
 	Connection con(db);
 	con.EnableQueryVerification();
 
 	unique_ptr<QueryResult> result;
+
+	// fetch from an error
+	result = con.Query("SELECT 'hello'::INT");
+	REQUIRE_THROWS(result->Fetch());
 
 	result = con.SendQuery("CREATE TABLE test (a INTEGER);");
 
@@ -226,20 +302,20 @@ TEST_CASE("Test fetch API robustness", "[api]") {
 	auto result = conn->SendQuery("SELECT 42");
 	// close the connection
 	conn.reset();
-	// now try to fetch a chunk, this should return a nullptr
+	// now try to fetch a chunk, this should not return a nullptr
 	auto chunk = result->Fetch();
-	REQUIRE(!chunk);
+	REQUIRE(chunk);
 
 	// now close the entire database
 	conn = make_unique<Connection>(*db);
 	result = conn->SendQuery("SELECT 42");
 
 	db.reset();
-	// fetch should fail
+	// fetch should not fail
 	chunk = result->Fetch();
-	REQUIRE(!chunk);
-	// new queries on the connection should fail as well
-	REQUIRE_FAIL(conn->SendQuery("SELECT 42"));
+	REQUIRE(chunk);
+	// new queries on the connection should not fail either
+	REQUIRE_NO_FAIL(conn->SendQuery("SELECT 42"));
 
 	// override fetch result
 	db = make_unique<DuckDB>(nullptr);
@@ -250,7 +326,7 @@ TEST_CASE("Test fetch API robustness", "[api]") {
 	REQUIRE_NO_FAIL(*result2);
 
 	// result1 should be closed now
-	REQUIRE(!result1->Fetch());
+	REQUIRE_THROWS(result1->Fetch());
 	// result2 should work
 	REQUIRE(result2->Fetch());
 
@@ -266,13 +342,13 @@ TEST_CASE("Test fetch API robustness", "[api]") {
 }
 
 static void VerifyStreamResult(unique_ptr<QueryResult> result) {
-	REQUIRE(result->types[0] == TypeId::INT32);
+	REQUIRE(result->types[0] == LogicalType::INTEGER);
 	size_t current_row = 0;
 	size_t current_expected_value = 0;
 	size_t expected_rows = 500 * 5;
 	while (true) {
 		auto chunk = result->Fetch();
-		if (chunk->size() == 0) {
+		if (!chunk || chunk->size() == 0) {
 			break;
 		}
 		auto col1_data = FlatVector::GetData<int>(chunk->data[0]);
@@ -319,6 +395,18 @@ TEST_CASE("Test fetch API with big results", "[api][.]") {
 	VerifyStreamResult(move(result));
 }
 
+TEST_CASE("Test streaming query during stack unwinding", "[api]") {
+	DuckDB db;
+	Connection con(db);
+
+	try {
+		auto result = con.SendQuery("SELECT * FROM range(1000000)");
+
+		throw std::runtime_error("hello");
+	} catch (...) {
+	}
+}
+
 TEST_CASE("Test prepare dependencies with multiple connections", "[catalog]") {
 	unique_ptr<QueryResult> result;
 	DuckDB db(nullptr);
@@ -351,4 +439,41 @@ TEST_CASE("Test prepare dependencies with multiple connections", "[catalog]") {
 	REQUIRE_NO_FAIL(con3->Query("DROP TABLE integers CASCADE"));
 	REQUIRE_NO_FAIL(con2->Query("COMMIT"));
 	REQUIRE_NO_FAIL(con3->Query("COMMIT"));
+}
+
+TEST_CASE("Test connection API", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	con.EnableQueryVerification();
+
+	// extract a plan node
+	REQUIRE_NOTHROW(con.ExtractPlan("SELECT 42"));
+	// can only extract one statement at a time
+	REQUIRE_THROWS(con.ExtractPlan("SELECT 42; SELECT 84"));
+
+	// append to a table
+	con.Query("CREATE TABLE integers(i integer);");
+	auto table_info = con.TableInfo("integers");
+
+	DataChunk chunk;
+	REQUIRE_NOTHROW(con.Append(*table_info, chunk));
+
+	// no transaction active
+	REQUIRE_THROWS(con.Commit());
+	REQUIRE_THROWS(con.Rollback());
+
+	// cannot start a transaction within a transaction
+	REQUIRE_NOTHROW(con.BeginTransaction());
+	REQUIRE_THROWS(con.BeginTransaction());
+
+	con.SetAutoCommit(false);
+	REQUIRE(!con.IsAutoCommit());
+
+	con.SetAutoCommit(true);
+	REQUIRE(con.IsAutoCommit());
+}
+
+TEST_CASE("Test parser tokenize", "[api]") {
+	Parser parser;
+	REQUIRE_NOTHROW(parser.Tokenize("SELECT * FROM table WHERE i+1=3 AND j='hello'; --tokenize example query"));
 }

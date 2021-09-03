@@ -2,71 +2,96 @@
 #include "duckdb/planner/expression/bound_default_expression.hpp"
 #include "duckdb/planner/expression/bound_parameter_expression.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
-BoundCastExpression::BoundCastExpression(TypeId target, unique_ptr<Expression> child, SQLType source_type,
-                                         SQLType target_type)
-    : Expression(ExpressionType::OPERATOR_CAST, ExpressionClass::BOUND_CAST, target), child(move(child)),
-      source_type(source_type), target_type(target_type) {
+BoundCastExpression::BoundCastExpression(unique_ptr<Expression> child_p, LogicalType target_type_p, bool try_cast_p)
+    : Expression(ExpressionType::OPERATOR_CAST, ExpressionClass::BOUND_CAST, move(target_type_p)), child(move(child_p)),
+      try_cast(try_cast_p) {
 }
 
-unique_ptr<Expression> BoundCastExpression::AddCastToType(unique_ptr<Expression> expr, SQLType source_type,
-                                                          SQLType target_type) {
-	assert(expr);
+unique_ptr<Expression> BoundCastExpression::AddCastToType(unique_ptr<Expression> expr, const LogicalType &target_type) {
+	D_ASSERT(expr);
 	if (expr->expression_class == ExpressionClass::BOUND_PARAMETER) {
 		auto &parameter = (BoundParameterExpression &)*expr;
-		parameter.sql_type = target_type;
-		parameter.return_type = GetInternalType(target_type);
+		parameter.return_type = target_type;
 	} else if (expr->expression_class == ExpressionClass::BOUND_DEFAULT) {
 		auto &def = (BoundDefaultExpression &)*expr;
-		def.sql_type = target_type;
-		def.return_type = GetInternalType(target_type);
-	} else if (source_type != target_type) {
-		return make_unique<BoundCastExpression>(GetInternalType(target_type), move(expr), source_type, target_type);
+		def.return_type = target_type;
+	} else if (expr->return_type != target_type) {
+		auto &expr_type = expr->return_type;
+		if (target_type.id() == LogicalTypeId::LIST && expr_type.id() == LogicalTypeId::LIST) {
+			auto &target_list = ListType::GetChildType(target_type);
+			auto &expr_list = ListType::GetChildType(expr_type);
+			if (target_list.id() == LogicalTypeId::ANY || expr_list == target_list) {
+				return expr;
+			}
+		}
+		return make_unique<BoundCastExpression>(move(expr), target_type);
 	}
 	return expr;
 }
 
-bool BoundCastExpression::CastIsInvertible(SQLType source_type, SQLType target_type) {
-	if (source_type.id == SQLTypeId::BOOLEAN || target_type.id == SQLTypeId::BOOLEAN) {
+bool BoundCastExpression::CastIsInvertible(const LogicalType &source_type, const LogicalType &target_type) {
+	if (source_type.id() == LogicalTypeId::BOOLEAN || target_type.id() == LogicalTypeId::BOOLEAN) {
 		return false;
 	}
-	if (source_type.id == SQLTypeId::FLOAT || target_type.id == SQLTypeId::FLOAT) {
+	if (source_type.id() == LogicalTypeId::FLOAT || target_type.id() == LogicalTypeId::FLOAT) {
 		return false;
 	}
-	if (source_type.id == SQLTypeId::DOUBLE || target_type.id == SQLTypeId::DOUBLE) {
+	if (source_type.id() == LogicalTypeId::DOUBLE || target_type.id() == LogicalTypeId::DOUBLE) {
 		return false;
 	}
-	if (source_type.id == SQLTypeId::VARCHAR) {
-		return target_type.id == SQLTypeId::DATE || target_type.id == SQLTypeId::TIMESTAMP;
+	if (source_type.id() == LogicalTypeId::DECIMAL || target_type.id() == LogicalTypeId::DECIMAL) {
+		uint8_t source_width, target_width;
+		uint8_t source_scale, target_scale;
+		// cast to or from decimal
+		// cast is only invertible if the cast is strictly widening
+		if (!source_type.GetDecimalProperties(source_width, source_scale)) {
+			return false;
+		}
+		if (!target_type.GetDecimalProperties(target_width, target_scale)) {
+			return false;
+		}
+		if (target_scale < source_scale) {
+			return false;
+		}
+		return true;
 	}
-	if (target_type.id == SQLTypeId::VARCHAR) {
-		return source_type.id == SQLTypeId::DATE || source_type.id == SQLTypeId::TIMESTAMP;
+	if (source_type.id() == LogicalTypeId::VARCHAR) {
+		return target_type.id() == LogicalTypeId::DATE || target_type.id() == LogicalTypeId::TIME ||
+		       target_type.id() == LogicalTypeId::TIMESTAMP || target_type.id() == LogicalTypeId::TIMESTAMP_NS ||
+		       target_type.id() == LogicalTypeId::TIMESTAMP_MS || target_type.id() == LogicalTypeId::TIMESTAMP_SEC;
+	}
+	if (target_type.id() == LogicalTypeId::VARCHAR) {
+		return source_type.id() == LogicalTypeId::DATE || source_type.id() == LogicalTypeId::TIME ||
+		       source_type.id() == LogicalTypeId::TIMESTAMP || source_type.id() == LogicalTypeId::TIMESTAMP_NS ||
+		       source_type.id() == LogicalTypeId::TIMESTAMP_MS || source_type.id() == LogicalTypeId::TIMESTAMP_SEC;
 	}
 	return true;
 }
 
 string BoundCastExpression::ToString() const {
-	return "CAST[" + TypeIdToString(return_type) + "](" + child->GetName() + ")";
+	return (try_cast ? "TRY_CAST(" : "CAST(") + child->GetName() + " AS " + return_type.ToString() + ")";
 }
 
-bool BoundCastExpression::Equals(const BaseExpression *other_) const {
-	if (!BaseExpression::Equals(other_)) {
+bool BoundCastExpression::Equals(const BaseExpression *other_p) const {
+	if (!Expression::Equals(other_p)) {
 		return false;
 	}
-	auto other = (BoundCastExpression *)other_;
+	auto other = (BoundCastExpression *)other_p;
 	if (!Expression::Equals(child.get(), other->child.get())) {
 		return false;
 	}
-	if (source_type != other->source_type || target_type != other->target_type) {
+	if (try_cast != other->try_cast) {
 		return false;
 	}
 	return true;
 }
 
 unique_ptr<Expression> BoundCastExpression::Copy() {
-	auto copy = make_unique<BoundCastExpression>(return_type, child->Copy(), source_type, target_type);
+	auto copy = make_unique<BoundCastExpression>(child->Copy(), return_type, try_cast);
 	copy->CopyProperties(*this);
 	return move(copy);
 }
+
+} // namespace duckdb

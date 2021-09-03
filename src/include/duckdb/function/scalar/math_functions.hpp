@@ -85,4 +85,20 @@ struct BitCountFun {
 	static void RegisterFunction(BuiltinFunctions &set);
 };
 
+struct GammaFun {
+	static void RegisterFunction(BuiltinFunctions &set);
+};
+
+struct LogGammaFun {
+	static void RegisterFunction(BuiltinFunctions &set);
+};
+
+struct FactorialFun {
+	static void RegisterFunction(BuiltinFunctions &set);
+};
+
+struct NextAfterFun {
+	static void RegisterFunction(BuiltinFunctions &set);
+};
+
 } // namespace duckdb

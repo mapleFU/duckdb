@@ -15,10 +15,12 @@
 #pragma once
 
 #include "nodes/parsenodes.hpp"
+#include "pg_simplified_token.hpp"
+#include <vector>
 
+namespace duckdb_libpgquery {
 
-typedef enum PGBackslashQuoteType
-{
+typedef enum PGBackslashQuoteType {
 	PG_BACKSLASH_QUOTE_OFF,
 	PG_BACKSLASH_QUOTE_ON,
 	PG_BACKSLASH_QUOTE_SAFE_ENCODING
@@ -27,7 +29,12 @@ typedef enum PGBackslashQuoteType
 /* Primary entry point for the raw parsing functions */
 PGList *raw_parser(const char *str);
 
+bool is_keyword(const char *str);
+
+std::vector<PGSimplifiedToken> tokenize(const char *str);
+
 /* Utility functions exported by gram.y (perhaps these should be elsewhere) */
 PGList *SystemFuncName(const char *name);
 PGTypeName *SystemTypeName(const char *name);
 
+}

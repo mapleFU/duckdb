@@ -2,8 +2,7 @@
 #include "duckdb/planner/expression/bound_operator_expression.hpp"
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
 using Filter = FilterPushdown::Filter;
 
@@ -12,12 +11,15 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownMarkJoin(unique_ptr<LogicalO
                                                              unordered_set<idx_t> &right_bindings) {
 	auto &join = (LogicalJoin &)*op;
 	auto &comp_join = (LogicalComparisonJoin &)*op;
-	assert(join.join_type == JoinType::MARK);
-	assert(op->type == LogicalOperatorType::COMPARISON_JOIN || op->type == LogicalOperatorType::DELIM_JOIN);
+	D_ASSERT(join.join_type == JoinType::MARK);
+	D_ASSERT(op->type == LogicalOperatorType::LOGICAL_COMPARISON_JOIN ||
+	         op->type == LogicalOperatorType::LOGICAL_DELIM_JOIN);
 
 	right_bindings.insert(comp_join.mark_index);
 	FilterPushdown left_pushdown(optimizer), right_pushdown(optimizer);
+#ifndef NDEBUG
 	bool found_mark_reference = false;
+#endif
 	// now check the set of filters
 	for (idx_t i = 0; i < filters.size(); i++) {
 		auto side = JoinSide::GetJoinSide(filters[i]->bindings, left_bindings, right_bindings);
@@ -29,8 +31,10 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownMarkJoin(unique_ptr<LogicalO
 			i--;
 		} else if (side == JoinSide::RIGHT) {
 			// there can only be at most one filter referencing the marker
-			assert(!found_mark_reference);
+#ifndef NDEBUG
+			D_ASSERT(!found_mark_reference);
 			found_mark_reference = true;
+#endif
 			// this filter references the marker
 			// we can turn this into a SEMI join if the filter is on only the marker
 			if (filters[i]->filter->type == ExpressionType::BOUND_COLUMN_REF) {
@@ -70,3 +74,5 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownMarkJoin(unique_ptr<LogicalO
 	op->children[1] = right_pushdown.Rewrite(move(op->children[1]));
 	return FinishPushdown(move(op));
 }
+
+} // namespace duckdb

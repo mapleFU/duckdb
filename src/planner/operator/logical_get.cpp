@@ -2,52 +2,69 @@
 
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/storage/data_table.hpp"
+#include "duckdb/planner/operator/logical_get.hpp"
+#include "duckdb/common/string_util.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
-LogicalGet::LogicalGet(idx_t table_index)
-    : LogicalOperator(LogicalOperatorType::GET), table(nullptr), table_index(table_index) {
+LogicalGet::LogicalGet(idx_t table_index, TableFunction function, unique_ptr<FunctionData> bind_data,
+                       vector<LogicalType> returned_types, vector<string> returned_names)
+    : LogicalOperator(LogicalOperatorType::LOGICAL_GET), table_index(table_index), function(move(function)),
+      bind_data(move(bind_data)), returned_types(move(returned_types)), names(move(returned_names)) {
 }
-LogicalGet::LogicalGet(TableCatalogEntry *table, idx_t table_index)
-    : LogicalOperator(LogicalOperatorType::GET), table(table), table_index(table_index) {
-}
-LogicalGet::LogicalGet(TableCatalogEntry *table, idx_t table_index, vector<column_t> column_ids)
-    : LogicalOperator(LogicalOperatorType::GET), table(table), table_index(table_index), column_ids(column_ids) {
+
+string LogicalGet::GetName() const {
+	return StringUtil::Upper(function.name);
 }
 
 string LogicalGet::ParamsToString() const {
-	if (!table) {
-		return "";
+	string result;
+	for (auto &kv : table_filters.filters) {
+		auto &column_index = kv.first;
+		auto &filter = kv.second;
+		if (column_index < names.size()) {
+			result += filter->ToString(names[column_index]);
+		}
+		result += "\n";
 	}
-	return "(" + table->name + ")";
+	if (!function.to_string) {
+		return string();
+	}
+	return function.to_string(bind_data.get());
 }
 
 vector<ColumnBinding> LogicalGet::GetColumnBindings() {
-	if (!table) {
-		return {ColumnBinding(INVALID_INDEX, 0)};
-	}
-	if (column_ids.size() == 0) {
+	if (column_ids.empty()) {
 		return {ColumnBinding(table_index, 0)};
 	}
 	vector<ColumnBinding> result;
 	for (idx_t i = 0; i < column_ids.size(); i++) {
-		result.push_back(ColumnBinding(table_index, i));
+		result.emplace_back(table_index, i);
 	}
 	return result;
 }
 
 void LogicalGet::ResolveTypes() {
-	if (column_ids.size() == 0) {
+	if (column_ids.empty()) {
 		column_ids.push_back(COLUMN_IDENTIFIER_ROW_ID);
 	}
-	types = table->GetTypes(column_ids);
-}
-
-idx_t LogicalGet::EstimateCardinality() {
-	if (table) {
-		return table->storage->info->cardinality;
-	} else {
-		return 1;
+	for (auto &index : column_ids) {
+		if (index == COLUMN_IDENTIFIER_ROW_ID) {
+			types.push_back(LOGICAL_ROW_TYPE);
+		} else {
+			types.push_back(returned_types[index]);
+		}
 	}
 }
+
+idx_t LogicalGet::EstimateCardinality(ClientContext &context) {
+	if (function.cardinality) {
+		auto node_stats = function.cardinality(context, bind_data.get());
+		if (node_stats && node_stats->has_estimated_cardinality) {
+			return node_stats->estimated_cardinality;
+		}
+	}
+	return 1;
+}
+
+} // namespace duckdb

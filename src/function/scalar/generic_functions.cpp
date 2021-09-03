@@ -1,9 +1,15 @@
 #include "duckdb/function/scalar/generic_functions.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
 void BuiltinFunctions::RegisterGenericFunctions() {
+	Register<AliasFun>();
 	Register<LeastFun>();
 	Register<GreatestFun>();
+	Register<StatsFun>();
+	Register<TypeOfFun>();
+	Register<CurrentSettingFun>();
+	Register<SystemFun>();
 }
+
+} // namespace duckdb

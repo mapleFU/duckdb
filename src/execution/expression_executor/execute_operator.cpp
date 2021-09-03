@@ -2,32 +2,33 @@
 #include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/planner/expression/bound_operator_expression.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
-unique_ptr<ExpressionState> ExpressionExecutor::InitializeState(BoundOperatorExpression &expr,
+unique_ptr<ExpressionState> ExpressionExecutor::InitializeState(const BoundOperatorExpression &expr,
                                                                 ExpressionExecutorState &root) {
 	auto result = make_unique<ExpressionState>(expr, root);
 	for (auto &child : expr.children) {
 		result->AddChild(child.get());
 	}
+	result->Finalize();
 	return result;
 }
 
-void ExpressionExecutor::Execute(BoundOperatorExpression &expr, ExpressionState *state, const SelectionVector *sel,
-                                 idx_t count, Vector &result) {
+void ExpressionExecutor::Execute(const BoundOperatorExpression &expr, ExpressionState *state,
+                                 const SelectionVector *sel, idx_t count, Vector &result) {
 	// special handling for special snowflake 'IN'
 	// IN has n children
 	if (expr.type == ExpressionType::COMPARE_IN || expr.type == ExpressionType::COMPARE_NOT_IN) {
 		if (expr.children.size() < 2) {
 			throw Exception("IN needs at least two children");
 		}
+
 		Vector left(expr.children[0]->return_type);
 		// eval left side
 		Execute(*expr.children[0], state->child_states[0].get(), sel, count, left);
 
 		// init result to false
-		Vector intermediate(TypeId::BOOL);
+		Vector intermediate(LogicalType::BOOLEAN);
 		Value false_val = Value::BOOLEAN(false);
 		intermediate.Reference(false_val);
 
@@ -36,7 +37,7 @@ void ExpressionExecutor::Execute(BoundOperatorExpression &expr, ExpressionState 
 		// to get the overall result.
 		for (idx_t child = 1; child < expr.children.size(); child++) {
 			Vector vector_to_check(expr.children[child]->return_type);
-			Vector comp_res(TypeId::BOOL);
+			Vector comp_res(LogicalType::BOOLEAN);
 
 			Execute(*expr.children[child], state->child_states[child].get(), sel, count, vector_to_check);
 			VectorOperations::Equals(left, vector_to_check, comp_res, count);
@@ -46,7 +47,7 @@ void ExpressionExecutor::Execute(BoundOperatorExpression &expr, ExpressionState 
 				intermediate.Reference(comp_res);
 			} else {
 				// otherwise OR together
-				Vector new_result(TypeId::BOOL, true, false);
+				Vector new_result(LogicalType::BOOLEAN, true, false);
 				VectorOperations::Or(intermediate, comp_res, new_result, count);
 				intermediate.Reference(new_result);
 			}
@@ -59,7 +60,9 @@ void ExpressionExecutor::Execute(BoundOperatorExpression &expr, ExpressionState 
 			result.Reference(intermediate);
 		}
 	} else if (expr.children.size() == 1) {
-		Vector child(expr.children[0]->return_type);
+		state->intermediate_chunk.Reset();
+		auto &child = state->intermediate_chunk.data[0];
+
 		Execute(*expr.children[0], state->child_states[0].get(), sel, count, child);
 		switch (expr.type) {
 		case ExpressionType::OPERATOR_NOT: {
@@ -81,3 +84,5 @@ void ExpressionExecutor::Execute(BoundOperatorExpression &expr, ExpressionState 
 		throw NotImplementedException("operator");
 	}
 }
+
+} // namespace duckdb

@@ -2,10 +2,9 @@
 #include "duckdb/parser/tableref/table_function_ref.hpp"
 #include "duckdb/parser/transformer.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
-unique_ptr<TableRef> Transformer::TransformRangeFunction(PGRangeFunction *root) {
+unique_ptr<TableRef> Transformer::TransformRangeFunction(duckdb_libpgquery::PGRangeFunction *root) {
 	if (root->lateral) {
 		throw NotImplementedException("LATERAL not implemented");
 	}
@@ -18,23 +17,34 @@ unique_ptr<TableRef> Transformer::TransformRangeFunction(PGRangeFunction *root) 
 	if (root->functions->length != 1) {
 		throw NotImplementedException("Need exactly one function");
 	}
-	auto function_sublist = (PGList *)root->functions->head->data.ptr_value;
-	assert(function_sublist->length == 2);
-	auto call_tree = (PGNode *)function_sublist->head->data.ptr_value;
+	auto function_sublist = (duckdb_libpgquery::PGList *)root->functions->head->data.ptr_value;
+	D_ASSERT(function_sublist->length == 2);
+	auto call_tree = (duckdb_libpgquery::PGNode *)function_sublist->head->data.ptr_value;
 	auto coldef = function_sublist->head->next->data.ptr_value;
 
-	assert(call_tree->type == T_PGFuncCall);
 	if (coldef) {
 		throw NotImplementedException("Explicit column definition not supported yet");
 	}
 	// transform the function call
 	auto result = make_unique<TableFunctionRef>();
-	result->function = TransformFuncCall((PGFuncCall *)call_tree);
-	result->alias = TransformAlias(root->alias);
-	if (root->alias && root->alias->colnames) {
-		for (auto node = root->alias->colnames->head; node != nullptr; node = node->next) {
-			result->column_name_alias.push_back(reinterpret_cast<PGValue *>(node->data.ptr_value)->val.str);
-		}
+	switch (call_tree->type) {
+	case duckdb_libpgquery::T_PGFuncCall: {
+		auto func_call = (duckdb_libpgquery::PGFuncCall *)call_tree;
+		result->function = TransformFuncCall(func_call, 0);
+		result->query_location = func_call->location;
+		break;
+	}
+	case duckdb_libpgquery::T_PGSQLValueFunction:
+		result->function = TransformSQLValueFunction((duckdb_libpgquery::PGSQLValueFunction *)call_tree, 0);
+		break;
+	default:
+		throw ParserException("Not a function call or value function");
+	}
+	result->alias = TransformAlias(root->alias, result->column_name_alias);
+	if (root->sample) {
+		result->sample = TransformSampleOptions(root->sample);
 	}
 	return move(result);
 }
+
+} // namespace duckdb

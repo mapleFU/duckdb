@@ -4,18 +4,28 @@
 #include "duckdb/common/serializer.hpp"
 #include "duckdb/parser/tableref/list.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
+
+string TableRef::ToString() const {
+	return string();
+}
+
+bool TableRef::Equals(const TableRef *other) const {
+	return other && type == other->type && alias == other->alias &&
+	       SampleOptions::Equals(sample.get(), other->sample.get());
+}
 
 void TableRef::Serialize(Serializer &serializer) {
 	serializer.Write<TableReferenceType>(type);
 	serializer.WriteString(alias);
+	serializer.WriteOptional(sample);
 }
 
 //! Deserializes a blob back into an TableRef
 unique_ptr<TableRef> TableRef::Deserialize(Deserializer &source) {
 	auto type = source.Read<TableReferenceType>();
 	auto alias = source.Read<string>();
+	auto sample = source.ReadOptional<SampleOptions>();
 	unique_ptr<TableRef> result;
 	switch (type) {
 	case TableReferenceType::BASE_TABLE:
@@ -41,12 +51,22 @@ unique_ptr<TableRef> TableRef::Deserialize(Deserializer &source) {
 		break;
 	case TableReferenceType::CTE:
 	case TableReferenceType::INVALID:
-		return nullptr;
+		throw InternalException("Unsupported type for TableRef::Deserialize");
 	}
 	result->alias = alias;
+	result->sample = move(sample);
 	return result;
+}
+
+void TableRef::CopyProperties(TableRef &target) const {
+	D_ASSERT(type == target.type);
+	target.alias = alias;
+	target.query_location = query_location;
+	target.sample = sample ? sample->Copy() : nullptr;
 }
 
 void TableRef::Print() {
 	Printer::Print(ToString());
 }
+
+} // namespace duckdb

@@ -3,8 +3,7 @@
 #include "duckdb/planner/expression/bound_parameter_expression.hpp"
 #include "duckdb/planner/expression_binder.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
 BindResult ExpressionBinder::BindExpression(CastExpression &expr, idx_t depth) {
 	// first try to bind the child of the cast expression
@@ -14,14 +13,22 @@ BindResult ExpressionBinder::BindExpression(CastExpression &expr, idx_t depth) {
 	}
 	// the children have been successfully resolved
 	auto &child = (BoundExpression &)*expr.child;
-	if (child.expr->type == ExpressionType::VALUE_PARAMETER) {
-		auto &parameter = (BoundParameterExpression &)*child.expr;
-		// parameter: move types into the parameter expression itself
-		parameter.return_type = GetInternalType(expr.cast_type);
-		parameter.sql_type = expr.cast_type;
+	if (expr.try_cast) {
+		if (child.expr->return_type == expr.cast_type) {
+			// no cast required: type matches
+			return BindResult(move(child.expr));
+		}
+		child.expr = make_unique<BoundCastExpression>(move(child.expr), expr.cast_type, true);
 	} else {
-		// otherwise add a cast to the target type
-		child.expr = BoundCastExpression::AddCastToType(move(child.expr), child.sql_type, expr.cast_type);
+		if (child.expr->type == ExpressionType::VALUE_PARAMETER) {
+			auto &parameter = (BoundParameterExpression &)*child.expr;
+			// parameter: move types into the parameter expression itself
+			parameter.return_type = expr.cast_type;
+		} else {
+			// otherwise add a cast to the target type
+			child.expr = BoundCastExpression::AddCastToType(move(child.expr), expr.cast_type);
+		}
 	}
-	return BindResult(move(child.expr), expr.cast_type);
+	return BindResult(move(child.expr));
 }
+} // namespace duckdb

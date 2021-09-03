@@ -17,7 +17,15 @@ struct AgeFun {
 	static void RegisterFunction(BuiltinFunctions &set);
 };
 
+struct DateDiffFun {
+	static void RegisterFunction(BuiltinFunctions &set);
+};
+
 struct DatePartFun {
+	static void RegisterFunction(BuiltinFunctions &set);
+};
+
+struct DateSubFun {
 	static void RegisterFunction(BuiltinFunctions &set);
 };
 
@@ -38,6 +46,18 @@ struct CurrentTimestampFun {
 };
 
 struct EpochFun {
+	static void RegisterFunction(BuiltinFunctions &set);
+};
+
+struct StrfTimeFun {
+	static void RegisterFunction(BuiltinFunctions &set);
+};
+
+struct StrpTimeFun {
+	static void RegisterFunction(BuiltinFunctions &set);
+};
+
+struct ToIntervalFun {
 	static void RegisterFunction(BuiltinFunctions &set);
 };
 

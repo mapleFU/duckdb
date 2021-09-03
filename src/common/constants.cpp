@@ -1,9 +1,6 @@
 #include "duckdb/common/constants.hpp"
 #include "duckdb/common/vector_size.hpp"
-#include <limits>
-
-using namespace duckdb;
-using namespace std;
+#include "duckdb/common/limits.hpp"
 
 namespace duckdb {
 
@@ -13,9 +10,10 @@ const column_t COLUMN_IDENTIFIER_ROW_ID = (column_t)-1;
 const sel_t ZERO_VECTOR[STANDARD_VECTOR_SIZE] = {0};
 const double PI = 3.141592653589793;
 
-const transaction_t TRANSACTION_ID_START = 4611686018427388000ULL;                  // 2^62
-const transaction_t NOT_DELETED_ID = std::numeric_limits<transaction_t>::max() - 1; // 2^64 - 1
-const transaction_t MAXIMUM_QUERY_ID = std::numeric_limits<transaction_t>::max();   // 2^64
+const transaction_t TRANSACTION_ID_START = 4611686018427388000ULL;                // 2^62
+const transaction_t MAX_TRANSACTION_ID = NumericLimits<transaction_t>::Maximum(); // 2^63
+const transaction_t NOT_DELETED_ID = NumericLimits<transaction_t>::Maximum() - 1; // 2^64 - 1
+const transaction_t MAXIMUM_QUERY_ID = NumericLimits<transaction_t>::Maximum();   // 2^64
 
 uint64_t NextPowerOfTwo(uint64_t v) {
 	v--;

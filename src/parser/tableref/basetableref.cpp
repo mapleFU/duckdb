@@ -2,15 +2,19 @@
 
 #include "duckdb/common/serializer.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
-bool BaseTableRef::Equals(const TableRef *other_) const {
-	if (!TableRef::Equals(other_)) {
+string BaseTableRef::ToString() const {
+	return "GET(" + schema_name + "." + table_name + ")";
+}
+
+bool BaseTableRef::Equals(const TableRef *other_p) const {
+	if (!TableRef::Equals(other_p)) {
 		return false;
 	}
-	auto other = (BaseTableRef *)other_;
-	return other->schema_name == schema_name && other->table_name == table_name;
+	auto other = (BaseTableRef *)other_p;
+	return other->schema_name == schema_name && other->table_name == table_name &&
+	       column_name_alias == other->column_name_alias;
 }
 
 void BaseTableRef::Serialize(Serializer &serializer) {
@@ -18,6 +22,7 @@ void BaseTableRef::Serialize(Serializer &serializer) {
 
 	serializer.WriteString(schema_name);
 	serializer.WriteString(table_name);
+	serializer.WriteStringVector(column_name_alias);
 }
 
 unique_ptr<TableRef> BaseTableRef::Deserialize(Deserializer &source) {
@@ -25,6 +30,7 @@ unique_ptr<TableRef> BaseTableRef::Deserialize(Deserializer &source) {
 
 	result->schema_name = source.Read<string>();
 	result->table_name = source.Read<string>();
+	source.ReadStringVector(result->column_name_alias);
 
 	return move(result);
 }
@@ -34,7 +40,9 @@ unique_ptr<TableRef> BaseTableRef::Copy() {
 
 	copy->schema_name = schema_name;
 	copy->table_name = table_name;
-	copy->alias = alias;
+	copy->column_name_alias = column_name_alias;
+	CopyProperties(*copy);
 
 	return move(copy);
 }
+} // namespace duckdb

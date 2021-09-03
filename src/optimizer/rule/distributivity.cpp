@@ -6,8 +6,7 @@
 #include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/planner/operator/logical_filter.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
 DistributivityRule::DistributivityRule(ExpressionRewriter &rewriter) : Rule(rewriter) {
 	// we match on an OR expression within a LogicalFilter node
@@ -46,11 +45,11 @@ unique_ptr<Expression> DistributivityRule::ExtractExpression(BoundConjunctionExp
 	} else {
 		// not an AND node! remove the entire expression
 		// this happens in the case of e.g. (X AND B) OR X
-		assert(Expression::Equals(child.get(), &expr));
+		D_ASSERT(Expression::Equals(child.get(), &expr));
 		result = move(child);
 		conj.children[idx] = nullptr;
 	}
-	assert(result);
+	D_ASSERT(result);
 	return result;
 }
 
@@ -78,7 +77,7 @@ unique_ptr<Expression> DistributivityRule::Apply(LogicalOperator &op, vector<Exp
 		}
 		candidate_set = intersect_result;
 	}
-	if (candidate_set.size() == 0) {
+	if (candidate_set.empty()) {
 		// nothing found: abort
 		return nullptr;
 	}
@@ -86,7 +85,7 @@ unique_ptr<Expression> DistributivityRule::Apply(LogicalOperator &op, vector<Exp
 	// the OR
 	auto new_root = make_unique<BoundConjunctionExpression>(ExpressionType::CONJUNCTION_AND);
 	for (auto &expr : candidate_set) {
-		assert(initial_or->children.size() > 0);
+		D_ASSERT(initial_or->children.size() > 0);
 
 		// extract the expression from the first child of the OR
 		auto result = ExtractExpression(*initial_or, 0, (Expression &)*expr);
@@ -96,11 +95,21 @@ unique_ptr<Expression> DistributivityRule::Apply(LogicalOperator &op, vector<Exp
 		}
 		// now we add the expression to the new root
 		new_root->children.push_back(move(result));
-		// remove any expressions that were set to nullptr
-		for (idx_t i = 0; i < initial_or->children.size(); i++) {
-			if (!initial_or->children[i]) {
-				initial_or->children.erase(initial_or->children.begin() + i);
-				i--;
+	}
+
+	// check if we completely erased one of the children of the OR
+	// this happens if we have an OR in the form of "X OR (X AND A)"
+	// the left child will be completely empty, as it only contains common expressions
+	// in this case, any other children are not useful:
+	// X OR (X AND A) is the same as "X"
+	// since (1) only tuples that do not qualify "X" will not pass this predicate
+	//   and (2) all tuples that qualify "X" will pass this predicate
+	for (idx_t i = 0; i < initial_or->children.size(); i++) {
+		if (!initial_or->children[i]) {
+			if (new_root->children.size() <= 1) {
+				return move(new_root->children[0]);
+			} else {
+				return move(new_root);
 			}
 		}
 	}
@@ -122,3 +131,5 @@ unique_ptr<Expression> DistributivityRule::Apply(LogicalOperator &op, vector<Exp
 	}
 	return move(new_root);
 }
+
+} // namespace duckdb

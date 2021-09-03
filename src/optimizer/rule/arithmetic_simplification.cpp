@@ -3,9 +3,9 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
+#include "duckdb/optimizer/expression_rewriter.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
 ArithmeticSimplificationRule::ArithmeticSimplificationRule(ExpressionRewriter &rewriter) : Rule(rewriter) {
 	// match on an OperatorExpression that has a ConstantExpression as child
@@ -14,7 +14,7 @@ ArithmeticSimplificationRule::ArithmeticSimplificationRule(ExpressionRewriter &r
 	op->matchers.push_back(make_unique<ExpressionMatcher>());
 	op->policy = SetMatcher::Policy::SOME;
 	// we only match on simple arithmetic expressions (+, -, *, /)
-	op->function = make_unique<ManyFunctionMatcher>(unordered_set<string>{"+", "-", "*", "/"});
+	op->function = make_unique<ManyFunctionMatcher>(unordered_set<string> {"+", "-", "*", "/"});
 	// and only with numeric results
 	op->type = make_unique<IntegerTypeMatcher>();
 	op->matchers[0]->type = make_unique<IntegerTypeMatcher>();
@@ -27,7 +27,8 @@ unique_ptr<Expression> ArithmeticSimplificationRule::Apply(LogicalOperator &op, 
 	auto root = (BoundFunctionExpression *)bindings[0];
 	auto constant = (BoundConstantExpression *)bindings[1];
 	int constant_child = root->children[0].get() == constant ? 0 : 1;
-	assert(root->children.size() == 2);
+	D_ASSERT(root->children.size() == 2);
+	(void)root;
 	// any arithmetic operator involving NULL is always NULL
 	if (constant->value.is_null) {
 		return make_unique<BoundConstantExpression>(Value(root->return_type));
@@ -49,9 +50,13 @@ unique_ptr<Expression> ArithmeticSimplificationRule::Apply(LogicalOperator &op, 
 		if (constant->value == 1) {
 			// multiply with 1, replace with non-constant child
 			return move(root->children[1 - constant_child]);
+		} else if (constant->value == 0) {
+			// multiply by zero: replace with constant or null
+			return ExpressionRewriter::ConstantOrNull(move(root->children[1 - constant_child]),
+			                                          Value::Numeric(root->return_type, 0));
 		}
 	} else {
-		assert(func_name == "/");
+		D_ASSERT(func_name == "/");
 		if (constant_child == 1) {
 			if (constant->value == 1) {
 				// divide by 1, replace with non-constant child
@@ -64,3 +69,4 @@ unique_ptr<Expression> ArithmeticSimplificationRule::Apply(LogicalOperator &op, 
 	}
 	return nullptr;
 }
+} // namespace duckdb

@@ -12,11 +12,17 @@ using namespace std;
 static constexpr int CONCURRENT_DELETE_THREAD_COUNT = 10;
 static constexpr int CONCURRENT_DELETE_INSERT_ELEMENTS = 100;
 
-TEST_CASE("Single thread delete", "[interquery]") {
+TEST_CASE("Single thread delete", "[interquery][.]") {
 	unique_ptr<QueryResult> result;
 	DuckDB db(nullptr);
 	Connection con(db);
 	vector<unique_ptr<Connection>> connections;
+
+	// enable detailed profiling
+	con.Query("PRAGMA enable_profiling");
+	auto detailed_profiling_output = TestCreatePath("detailed_profiling_output");
+	con.Query("PRAGMA profiling_output='" + detailed_profiling_output + "'");
+	con.Query("PRAGMA profiling_mode = detailed");
 
 	// initialize the database
 	con.Query("CREATE TABLE integers(i INTEGER);");
@@ -41,12 +47,18 @@ TEST_CASE("Single thread delete", "[interquery]") {
 	REQUIRE(CHECK_COLUMN(result, 0, {sum - 2 * CONCURRENT_DELETE_INSERT_ELEMENTS}));
 }
 
-TEST_CASE("Sequential delete", "[interquery]") {
+TEST_CASE("Sequential delete", "[interquery][.]") {
 	unique_ptr<MaterializedQueryResult> result;
 	DuckDB db(nullptr);
 	Connection con(db);
 	vector<unique_ptr<Connection>> connections;
 	Value count;
+
+	// enable detailed profiling
+	con.Query("PRAGMA enable_profiling");
+	auto detailed_profiling_output = TestCreatePath("detailed_profiling_output");
+	con.Query("PRAGMA profiling_output='" + detailed_profiling_output + "'");
+	con.Query("PRAGMA profiling_mode = detailed");
 
 	// initialize the database
 	con.Query("CREATE TABLE integers(i INTEGER);");
@@ -68,20 +80,20 @@ TEST_CASE("Sequential delete", "[interquery]") {
 		// check the current count
 		result = connections[i]->Query("SELECT SUM(i) FROM integers");
 		REQUIRE_NO_FAIL(*result);
-		count = result->collection.chunks[0]->GetValue(0, 0);
+		count = result->collection.GetValue(0, 0);
 		REQUIRE(count == sum);
 		// delete the elements for this thread
 		REQUIRE_NO_FAIL(connections[i]->Query("DELETE FROM integers WHERE i=" + to_string(i + 1)));
 		// check the updated count
 		result = connections[i]->Query("SELECT SUM(i) FROM integers");
 		REQUIRE_NO_FAIL(*result);
-		count = result->collection.chunks[0]->GetValue(0, 0);
+		count = result->collection.GetValue(0, 0);
 		REQUIRE(count == sum - (i + 1) * CONCURRENT_DELETE_INSERT_ELEMENTS);
 	}
 	// check the count on the original connection
 	result = con.Query("SELECT SUM(i) FROM integers");
 	REQUIRE_NO_FAIL(*result);
-	count = result->collection.chunks[0]->GetValue(0, 0);
+	count = result->collection.GetValue(0, 0);
 	REQUIRE(count == sum);
 
 	// commit everything
@@ -92,15 +104,21 @@ TEST_CASE("Sequential delete", "[interquery]") {
 	// check that the count is 0 now
 	result = con.Query("SELECT COUNT(i) FROM integers");
 	REQUIRE_NO_FAIL(*result);
-	count = result->collection.chunks[0]->GetValue(0, 0);
+	count = result->collection.GetValue(0, 0);
 	REQUIRE(count == 0);
 }
 
-TEST_CASE("Rollback delete", "[interquery]") {
+TEST_CASE("Rollback delete", "[interquery][.]") {
 	unique_ptr<MaterializedQueryResult> result;
 	DuckDB db(nullptr);
 	Connection con(db);
 	vector<unique_ptr<Connection>> connections;
+
+	// enable detailed profiling
+	con.Query("PRAGMA enable_profiling");
+	auto detailed_profiling_output = TestCreatePath("detailed_profiling_output");
+	con.Query("PRAGMA profiling_output='" + detailed_profiling_output + "'");
+	con.Query("PRAGMA profiling_mode = detailed");
 
 	// initialize the database
 	con.Query("CREATE TABLE integers(i INTEGER);");
@@ -143,7 +161,7 @@ static void delete_elements(DuckDB *db, bool *correct, size_t threadnr) {
 	// initial count
 	con.Query("BEGIN TRANSACTION;");
 	auto result = con.Query("SELECT COUNT(*) FROM integers");
-	Value count = result->collection.chunks[0]->GetValue(0, 0);
+	Value count = result->collection.GetValue(0, 0);
 	auto start_count = count.GetValue<int64_t>();
 
 	for (size_t i = 0; i < CONCURRENT_DELETE_INSERT_ELEMENTS; i++) {
@@ -156,7 +174,7 @@ static void delete_elements(DuckDB *db, bool *correct, size_t threadnr) {
 		if (!result->success) {
 			correct[threadnr] = false;
 		} else {
-			Value new_count = result->collection.chunks[0]->GetValue(0, 0);
+			Value new_count = result->collection.GetValue(0, 0);
 			if (new_count != start_count - (i + 1)) {
 				correct[threadnr] = false;
 			}
@@ -173,6 +191,12 @@ TEST_CASE("Concurrent delete", "[interquery][.]") {
 	unique_ptr<MaterializedQueryResult> result;
 	DuckDB db(nullptr);
 	Connection con(db);
+
+	// enable detailed profiling
+	con.Query("PRAGMA enable_profiling");
+	auto detailed_profiling_output = TestCreatePath("detailed_profiling_output");
+	con.Query("PRAGMA profiling_output='" + detailed_profiling_output + "'");
+	con.Query("PRAGMA profiling_mode = detailed");
 
 	// initialize the database
 	REQUIRE_NO_FAIL(con.Query("CREATE TABLE integers(i INTEGER);"));
@@ -199,7 +223,6 @@ TEST_CASE("Concurrent delete", "[interquery][.]") {
 	// check that the count is 0 now
 	result = con.Query("SELECT COUNT(i) FROM integers");
 	REQUIRE_NO_FAIL(*result);
-	auto count = result->collection.chunks[0]->GetValue(0, 0);
+	auto count = result->collection.GetValue(0, 0);
 	REQUIRE(count == 0);
 }
-

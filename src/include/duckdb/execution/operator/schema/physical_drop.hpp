@@ -16,14 +16,15 @@ namespace duckdb {
 //! PhysicalDrop represents a DROP [...] command
 class PhysicalDrop : public PhysicalOperator {
 public:
-	PhysicalDrop(unique_ptr<DropInfo> info)
-	    : PhysicalOperator(PhysicalOperatorType::DROP, {TypeId::BOOL}), info(move(info)) {
+	explicit PhysicalDrop(unique_ptr<DropInfo> info, idx_t estimated_cardinality)
+	    : PhysicalOperator(PhysicalOperatorType::DROP, {LogicalType::BOOLEAN}, estimated_cardinality),
+	      info(move(info)) {
 	}
 
 	unique_ptr<DropInfo> info;
 
 public:
-	void GetChunkInternal(ExecutionContext &context, DataChunk &chunk, PhysicalOperatorState *state) override;
+	void GetChunkInternal(ExecutionContext &context, DataChunk &chunk, PhysicalOperatorState *state) const override;
 };
 
 } // namespace duckdb

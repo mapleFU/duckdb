@@ -5,46 +5,38 @@
 #include "duckdb/execution/execution_context.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/parallel/thread_context.hpp"
-
-using namespace std;
+#include "duckdb/common/tree_renderer.hpp"
 
 namespace duckdb {
 
-string PhysicalOperator::ToString(idx_t depth) const {
-	string extra_info = StringUtil::Replace(ExtraRenderInformation(), "\n", " ");
-	StringUtil::RTrim(extra_info);
-	if (!extra_info.empty()) {
-		extra_info = "[" + extra_info + "]";
-	}
-	string result = PhysicalOperatorToString(type) + extra_info;
-	if (children.size() > 0) {
-		for (idx_t i = 0; i < children.size(); i++) {
-			result += "\n" + string(depth * 4, ' ');
-			auto &child = children[i];
-			result += child->ToString(depth + 1);
-		}
-		result += "";
-	}
-	return result;
+string PhysicalOperator::GetName() const {
+	return PhysicalOperatorToString(type);
 }
 
-PhysicalOperatorState::PhysicalOperatorState(PhysicalOperator *child) : finished(false) {
+string PhysicalOperator::ToString() const {
+	TreeRenderer renderer;
+	return renderer.ToString(*this);
+}
+
+PhysicalOperatorState::PhysicalOperatorState(PhysicalOperator &op, PhysicalOperator *child) : finished(false) {
 	if (child) {
 		child->InitializeChunk(child_chunk);
 		child_state = child->GetOperatorState();
 	}
 }
 
-void PhysicalOperator::GetChunk(ExecutionContext &context, DataChunk &chunk, PhysicalOperatorState *state) {
+void PhysicalOperator::GetChunk(ExecutionContext &context, DataChunk &chunk, PhysicalOperatorState *state) const {
 	if (context.client.interrupted) {
 		throw InterruptException();
 	}
-
+	// reset the chunk back to its initial state
 	chunk.Reset();
+
 	if (state->finished) {
 		return;
 	}
 
+	// execute the operator
 	context.thread.profiler.StartOperator(this);
 	GetChunkInternal(context, chunk, state);
 	context.thread.profiler.EndOperator(&chunk);
@@ -52,13 +44,10 @@ void PhysicalOperator::GetChunk(ExecutionContext &context, DataChunk &chunk, Phy
 	chunk.Verify();
 }
 
+// LCOV_EXCL_START
 void PhysicalOperator::Print() {
 	Printer::Print(ToString());
 }
-
-void PhysicalOperator::ParallelScanInfo(ClientContext &context,
-                                        std::function<void(unique_ptr<OperatorTaskInfo>)> callback) {
-	throw InternalException("Unsupported operator for parallel scan!");
-}
+// LCOV_EXCL_STOP
 
 } // namespace duckdb

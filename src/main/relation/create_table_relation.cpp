@@ -8,13 +8,9 @@
 namespace duckdb {
 
 CreateTableRelation::CreateTableRelation(shared_ptr<Relation> child_p, string schema_name, string table_name)
-    : Relation(child_p->context, RelationType::CREATE_TABLE_RELATION), child(move(child_p)), schema_name(move(schema_name)),
-      table_name(move(table_name)) {
+    : Relation(child_p->context, RelationType::CREATE_TABLE_RELATION), child(move(child_p)),
+      schema_name(move(schema_name)), table_name(move(table_name)) {
 	context.TryBindRelation(*this, this->columns);
-}
-
-unique_ptr<QueryNode> CreateTableRelation::GetQueryNode() {
-	throw InternalException("Cannot create a query node from a CreateTableRelation!");
 }
 
 BoundStatement CreateTableRelation::Bind(Binder &binder) {
@@ -26,7 +22,7 @@ BoundStatement CreateTableRelation::Bind(Binder &binder) {
 	info->schema = schema_name;
 	info->table = table_name;
 	info->query = move(select);
-	info->on_conflict = OnCreateConflict::ERROR;
+	info->on_conflict = OnCreateConflict::ERROR_ON_CONFLICT;
 	stmt.info = move(info);
 	return binder.Bind((SQLStatement &)stmt);
 }
@@ -36,7 +32,7 @@ const vector<ColumnDefinition> &CreateTableRelation::Columns() {
 }
 
 string CreateTableRelation::ToString(idx_t depth) {
-	string str = RenderWhitespace(depth) + "Create View\n";
+	string str = RenderWhitespace(depth) + "Create Table\n";
 	return str + child->ToString(depth + 1);
 }
 

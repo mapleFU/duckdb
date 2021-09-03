@@ -1,11 +1,11 @@
 #include "duckdb/planner/expression/bound_operator_expression.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/parser/expression_util.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
-BoundOperatorExpression::BoundOperatorExpression(ExpressionType type, TypeId return_type)
-    : Expression(type, ExpressionClass::BOUND_OPERATOR, return_type) {
+BoundOperatorExpression::BoundOperatorExpression(ExpressionType type, LogicalType return_type)
+    : Expression(type, ExpressionClass::BOUND_OPERATOR, move(return_type)) {
 }
 
 string BoundOperatorExpression::ToString() const {
@@ -26,18 +26,13 @@ string BoundOperatorExpression::ToString() const {
 	return result;
 }
 
-bool BoundOperatorExpression::Equals(const BaseExpression *other_) const {
-	if (!BaseExpression::Equals(other_)) {
+bool BoundOperatorExpression::Equals(const BaseExpression *other_p) const {
+	if (!Expression::Equals(other_p)) {
 		return false;
 	}
-	auto other = (BoundOperatorExpression *)other_;
-	if (children.size() != other->children.size()) {
+	auto other = (BoundOperatorExpression *)other_p;
+	if (!ExpressionUtil::ListEquals(children, other->children)) {
 		return false;
-	}
-	for (idx_t i = 0; i < children.size(); i++) {
-		if (!Expression::Equals(children[i].get(), other->children[i].get())) {
-			return false;
-		}
 	}
 	return true;
 }
@@ -50,3 +45,5 @@ unique_ptr<Expression> BoundOperatorExpression::Copy() {
 	}
 	return move(copy);
 }
+
+} // namespace duckdb

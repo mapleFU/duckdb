@@ -2,17 +2,20 @@
 #include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/planner/expression/bound_parameter_expression.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
-unique_ptr<ExpressionState> ExpressionExecutor::InitializeState(BoundParameterExpression &expr,
+unique_ptr<ExpressionState> ExpressionExecutor::InitializeState(const BoundParameterExpression &expr,
                                                                 ExpressionExecutorState &root) {
-	return nullptr;
+	auto result = make_unique<ExpressionState>(expr, root);
+	result->Finalize();
+	return result;
 }
 
-void ExpressionExecutor::Execute(BoundParameterExpression &expr, ExpressionState *state, const SelectionVector *sel,
-                                 idx_t count, Vector &result) {
-	assert(expr.value);
-	assert(expr.value->type == expr.return_type);
+void ExpressionExecutor::Execute(const BoundParameterExpression &expr, ExpressionState *state,
+                                 const SelectionVector *sel, idx_t count, Vector &result) {
+	D_ASSERT(expr.value);
+	D_ASSERT(expr.value->type() == expr.return_type);
 	result.Reference(*expr.value);
 }
+
+} // namespace duckdb

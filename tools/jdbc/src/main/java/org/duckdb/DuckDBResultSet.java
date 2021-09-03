@@ -2,7 +2,9 @@ package org.duckdb;
 
 import java.io.InputStream;
 import java.io.Reader;
+import java.io.UnsupportedEncodingException;
 import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.net.URL;
 import java.nio.Buffer;
 import java.nio.ByteBuffer;
@@ -124,14 +126,32 @@ public class DuckDBResultSet implements ResultSet {
 			return getInt(columnIndex);
 		} else if (column_type.equals("BIGINT")) {
 			return getLong(columnIndex);
+		}else if (column_type.equals("UTINYINT")) {
+			return getShort(columnIndex);
+		} else if (column_type.equals("USMALLINT")) {
+			return getInt(columnIndex);
+		} else if (column_type.equals("UINTEGER")) {
+			return getLong(columnIndex);
+		} else if (column_type.equals("UBIGINT")) {
+			return getHugeint(columnIndex);
+		} else if (column_type.equals("HUGEINT")) {
+			return getHugeint(columnIndex);
 		} else if (column_type.equals("FLOAT")) {
 			return getFloat(columnIndex);
-		} else if (column_type.equals("DOUBLE")) {
+		} else if (column_type.equals("DOUBLE") || column_type.startsWith("DECIMAL")) {
 			return getDouble(columnIndex);
 		} else if (column_type.equals("VARCHAR")) {
 			return getString(columnIndex);
-		 } else {
-		 	throw new SQLException("Not implemented type: " + meta.column_types[columnIndex - 1]);
+		} else if (column_type.equals("TIME")) {
+			return getTime(columnIndex);
+		} else if (column_type.equals("DATE")) {
+			return getDate(columnIndex);
+		} else if (column_type.equals("TIMESTAMP")) {
+			return getTimestamp(columnIndex);
+		} else if (column_type.equals("INTERVAL")) {
+			return getLazyString(columnIndex);
+		} else {
+			throw new SQLException("Not implemented type: " + meta.column_types[columnIndex - 1]);
 		}
 	}
 
@@ -148,20 +168,33 @@ public class DuckDBResultSet implements ResultSet {
 		return was_null;
 	}
 
+	public String getLazyString(int columnIndex) throws SQLException {
+		if (check_and_null(columnIndex)) {
+			return null;
+		}
+		return (String) current_chunk[columnIndex - 1].varlen_data[chunk_idx - 1];
+	}
+
 	public String getString(int columnIndex) throws SQLException {
 		if (check_and_null(columnIndex)) {
 			return null;
 		}
+
 		if ("VARCHAR".equals(meta.column_types[columnIndex - 1])) {
 			return (String) current_chunk[columnIndex - 1].varlen_data[chunk_idx - 1];
 		}
-		return getObject(columnIndex).toString();
+		Object res = getObject(columnIndex);
+		if (res == null) {
+			return null;
+		} else {
+			return res.toString();
+		}
 	}
 
 	private ByteBuffer getbuf(int columnIndex, int typeWidth) throws SQLException {
 		ByteBuffer buf = current_chunk[columnIndex - 1].constlen_data;
 		buf.order(ByteOrder.LITTLE_ENDIAN);
-		((Buffer)buf).position((chunk_idx - 1) * typeWidth);
+		((Buffer) buf).position((chunk_idx - 1) * typeWidth);
 		return buf;
 	}
 
@@ -201,6 +234,14 @@ public class DuckDBResultSet implements ResultSet {
 		if ("SMALLINT".equals(meta.column_types[columnIndex - 1])) {
 			return getbuf(columnIndex, 2).getShort();
 		}
+		else if ("UTINYINT".equals(meta.column_types[columnIndex - 1])){
+			byte[] buf_res = new byte[2];
+			byte[] buf = new byte[1];
+			getbuf(columnIndex, 1).get(buf);
+			buf_res[1] = buf[0];
+			ByteBuffer bb = ByteBuffer.wrap(buf_res);
+			return bb.getShort();
+		}
 		Object o = getObject(columnIndex);
 		if (o instanceof Number) {
 			return ((Number) o).shortValue();
@@ -214,6 +255,15 @@ public class DuckDBResultSet implements ResultSet {
 		}
 		if ("INTEGER".equals(meta.column_types[columnIndex - 1])) {
 			return getbuf(columnIndex, 4).getInt();
+		}
+		else if ("USMALLINT".equals(meta.column_types[columnIndex - 1])){
+			byte[] buf_res = new byte[4];
+			byte[] buf = new byte[2];
+			getbuf(columnIndex, 2).get(buf);
+			buf_res[2] = buf[0];
+			buf_res[3] = buf[1];
+			ByteBuffer bb = ByteBuffer.wrap(buf_res);
+			return bb.getInt();
 		}
 		Object o = getObject(columnIndex);
 		if (o instanceof Number) {
@@ -229,11 +279,56 @@ public class DuckDBResultSet implements ResultSet {
 		if ("BIGINT".equals(meta.column_types[columnIndex - 1])) {
 			return getbuf(columnIndex, 8).getLong();
 		}
+		else if( "UINTEGER".equals(meta.column_types[columnIndex - 1])){
+			byte[] buf_res = new byte[8];
+			byte[] buf = new byte[4];
+			getbuf(columnIndex, 4).get(buf);
+			buf_res[4] = buf[0];
+			buf_res[5] = buf[1];
+			buf_res[6] = buf[2];
+			buf_res[7] = buf[3];
+
+			ByteBuffer bb = ByteBuffer.wrap(buf_res);
+			return bb.getLong();
+		}
 		Object o = getObject(columnIndex);
 		if (o instanceof Number) {
 			return ((Number) o).longValue();
 		}
 		return Long.parseLong(o.toString());
+	}
+
+	public BigInteger getHugeint(int columnIndex) throws SQLException {
+		if (check_and_null(columnIndex)) {
+			return BigInteger.ZERO;
+		}
+		if ("HUGEINT".equals(meta.column_types[columnIndex - 1])) {
+			byte[] buf = new byte[16];
+			getbuf(columnIndex, 16).get(buf);
+
+			for (int i = 0; i < 8; i++) {
+				byte keep = buf[i];
+				buf[i] = buf[15 - i];
+				buf[15 - i] = keep;
+			}
+			return new BigInteger(buf);
+		}
+		else if ("UBIGINT".equals(meta.column_types[columnIndex - 1])) {
+			byte[] buf_res = new byte[16];
+			byte[] buf = new byte[8];
+			getbuf(columnIndex, 8).get(buf);
+			buf_res[8] = buf[0];
+			buf_res[9] = buf[1];
+			buf_res[10] = buf[2];
+			buf_res[11] = buf[3];
+			buf_res[12] = buf[4];
+			buf_res[13] = buf[5];
+			buf_res[14] = buf[6];
+			buf_res[15] = buf[7];
+			return new BigInteger(buf_res);
+		}
+		Object o = getObject(columnIndex);
+		return new BigInteger(o.toString());
 	}
 
 	public float getFloat(int columnIndex) throws SQLException {
@@ -254,7 +349,8 @@ public class DuckDBResultSet implements ResultSet {
 		if (check_and_null(columnIndex)) {
 			return Double.NaN;
 		}
-		if ("DOUBLE".equals(meta.column_types[columnIndex - 1])) {
+		String col_type_str = meta.column_types[columnIndex - 1];
+		if (col_type_str.equals("DOUBLE") || col_type_str.startsWith("DECIMAL")) {
 			return getbuf(columnIndex, 8).getDouble();
 		}
 		Object o = getObject(columnIndex);
@@ -321,15 +417,41 @@ public class DuckDBResultSet implements ResultSet {
 	}
 
 	public Date getDate(int columnIndex) throws SQLException {
-		throw new SQLFeatureNotSupportedException();
+		String string_value = getLazyString(columnIndex);
+		if (string_value == null) {
+			return null;
+		}
+		try {
+			return Date.valueOf(string_value);
+		} catch (Exception e) {
+			return null;
+		}
 	}
 
 	public Time getTime(int columnIndex) throws SQLException {
-		throw new SQLFeatureNotSupportedException();
+		String string_value = getLazyString(columnIndex);
+		if (string_value == null) {
+			return null;
+		}
+		try {
+
+			return Time.valueOf(getLazyString(columnIndex));
+		} catch (Exception e) {
+			return null;
+		}
 	}
 
 	public Timestamp getTimestamp(int columnIndex) throws SQLException {
-		throw new SQLFeatureNotSupportedException();
+		String string_value = getLazyString(columnIndex);
+		if (string_value == null) {
+			return null;
+		}
+		try {
+
+			return Timestamp.valueOf(getLazyString(columnIndex));
+		} catch (Exception e) {
+			return null;
+		}
 	}
 
 	public InputStream getAsciiStream(int columnIndex) throws SQLException {
@@ -353,15 +475,15 @@ public class DuckDBResultSet implements ResultSet {
 	}
 
 	public Date getDate(String columnLabel) throws SQLException {
-		throw new SQLFeatureNotSupportedException();
+		return getDate(findColumn(columnLabel));
 	}
 
 	public Time getTime(String columnLabel) throws SQLException {
-		throw new SQLFeatureNotSupportedException();
+		return getTime(findColumn(columnLabel));
 	}
 
 	public Timestamp getTimestamp(String columnLabel) throws SQLException {
-		throw new SQLFeatureNotSupportedException();
+		return getTimestamp(findColumn(columnLabel));
 	}
 
 	public InputStream getAsciiStream(String columnLabel) throws SQLException {
@@ -397,11 +519,11 @@ public class DuckDBResultSet implements ResultSet {
 	}
 
 	public BigDecimal getBigDecimal(int columnIndex) throws SQLException {
-		throw new SQLFeatureNotSupportedException();
+		return new BigDecimal(getHugeint(columnIndex));
 	}
 
 	public BigDecimal getBigDecimal(String columnLabel) throws SQLException {
-		throw new SQLFeatureNotSupportedException();
+		return getBigDecimal(findColumn(columnLabel));
 	}
 
 	public boolean isBeforeFirst() throws SQLException {

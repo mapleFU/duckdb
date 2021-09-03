@@ -8,8 +8,12 @@ if(POLICY CMP0048)
   cmake_policy(SET CMP0048 NEW)
 endif()
 
+if(POLICY CMP0063)
+  cmake_policy(SET CMP0063 NEW)
+endif()
+
 project(RE2 CXX)
-cmake_policy(SET CMP0063 NEW)
+
 set(CMAKE_CXX_VISIBILITY_PRESET hidden)
 
 include(CTest)
@@ -82,17 +86,15 @@ set(RE2_SOURCES
     util/rune.cc
     util/strutil.cc)
 
-add_library(re2 STATIC ${RE2_SOURCES})
-add_library(duckdb_re2::re2 ALIAS re2)
+add_library(duckdb_re2 STATIC ${RE2_SOURCES})
 
 target_include_directories(
-  re2
+  duckdb_re2
   PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>)
-set_target_properties(re2 PROPERTIES EXPORT_NAME duckdb_re2)
 
-install(TARGETS re2
+install(TARGETS duckdb_re2
         EXPORT "${DUCKDB_EXPORT_SET}"
         LIBRARY DESTINATION "${INSTALL_LIB_DIR}"
         ARCHIVE DESTINATION "${INSTALL_LIB_DIR}")
 
-disable_target_warnings(re2)
+disable_target_warnings(duckdb_re2)

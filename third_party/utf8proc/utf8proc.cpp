@@ -333,10 +333,10 @@ UTF8PROC_DLLEXPORT utf8proc_bool utf8proc_grapheme_break(
 }
 
 // from http://www.zedwood.com/article/cpp-utf8-char-to-codepoint
-utf8proc_int32_t utf8proc_codepoint(const char *u_input, int &sz) {
+UTF8PROC_DLLEXPORT utf8proc_int32_t utf8proc_codepoint(const char *u_input, int &sz) {
 	auto u = (const unsigned char *) u_input;
 	unsigned char u0 = u[0];
-	if (u0>=0   && u0<=127) {
+	if (u0<=127) {
 		sz = 1;
 		return u0;
 	}
@@ -450,8 +450,8 @@ static utf8proc_ssize_t seqindex_write_char_decomposed(utf8proc_uint16_t seqinde
 	}
 	for (; len >= 0; entry++, len--) {
 		utf8proc_int32_t entry_cp = seqindex_decode_entry(&entry);
-
-		written += utf8proc_decompose_char(entry_cp, dst+written,
+		utf8proc_int32_t *dst_ptr = dst ? dst + written : nullptr;
+		written += utf8proc_decompose_char(entry_cp, dst_ptr,
 			(bufsize > written) ? (bufsize - written) : 0, options,
 		last_boundclass);
 		if (written < 0) return UTF8PROC_ERROR_OVERFLOW;
@@ -624,8 +624,9 @@ UTF8PROC_DLLEXPORT utf8proc_ssize_t utf8proc_decompose_custom(
 			if (custom_func != NULL) {
 				uc = custom_func(uc, custom_data);   /* user-specified custom mapping */
 			}
+			utf8proc_int32_t *target_buffer = buffer ? buffer + wpos : nullptr;
 			decomp_result = utf8proc_decompose_char(
-				uc, buffer + wpos, (bufsize > wpos) ? (bufsize - wpos) : 0, options,
+				uc, target_buffer, (bufsize > wpos) ? (bufsize - wpos) : 0, options,
 				&boundclass
 			);
 			if (decomp_result < 0) return decomp_result;
@@ -830,44 +831,44 @@ UTF8PROC_DLLEXPORT utf8proc_ssize_t utf8proc_map_custom(
 	return result;
 }
 
-UTF8PROC_DLLEXPORT utf8proc_uint8_t *utf8proc_NFD(const utf8proc_uint8_t *str) {
+UTF8PROC_DLLEXPORT utf8proc_uint8_t *utf8proc_NFD(const utf8proc_uint8_t *str, utf8proc_ssize_t len) {
 	utf8proc_uint8_t *retval;
-	utf8proc_map(str, 0, &retval, (utf8proc_option_t)(UTF8PROC_NULLTERM | UTF8PROC_STABLE |
+	utf8proc_map(str, len, &retval, (utf8proc_option_t)(UTF8PROC_STABLE |
 		UTF8PROC_DECOMPOSE));
 	return retval;
 }
 
-UTF8PROC_DLLEXPORT utf8proc_uint8_t *utf8proc_NFC(const utf8proc_uint8_t *str) {
+UTF8PROC_DLLEXPORT utf8proc_uint8_t *utf8proc_NFC(const utf8proc_uint8_t *str, utf8proc_ssize_t len) {
 	utf8proc_uint8_t *retval;
-	utf8proc_map(str, 0, &retval, (utf8proc_option_t)(UTF8PROC_NULLTERM | UTF8PROC_STABLE |
+	utf8proc_map(str, len, &retval, (utf8proc_option_t)(UTF8PROC_STABLE |
 		UTF8PROC_COMPOSE));
 	return retval;
 }
 
-UTF8PROC_DLLEXPORT utf8proc_uint8_t *utf8proc_remove_accents(const utf8proc_uint8_t *str) {
+UTF8PROC_DLLEXPORT utf8proc_uint8_t *utf8proc_remove_accents(const utf8proc_uint8_t *str, utf8proc_ssize_t len) {
 	utf8proc_uint8_t *retval;
-	utf8proc_map(str, 0, &retval, (utf8proc_option_t)(UTF8PROC_NULLTERM | UTF8PROC_STABLE |
+	utf8proc_map(str, len, &retval, (utf8proc_option_t)(UTF8PROC_STABLE |
 		UTF8PROC_COMPOSE | UTF8PROC_STRIPMARK));
 	return retval;
 }
 
-UTF8PROC_DLLEXPORT utf8proc_uint8_t *utf8proc_NFKD(const utf8proc_uint8_t *str) {
+UTF8PROC_DLLEXPORT utf8proc_uint8_t *utf8proc_NFKD(const utf8proc_uint8_t *str, utf8proc_ssize_t len) {
 	utf8proc_uint8_t *retval;
-	utf8proc_map(str, 0, &retval, (utf8proc_option_t)(UTF8PROC_NULLTERM | UTF8PROC_STABLE |
+	utf8proc_map(str, len, &retval, (utf8proc_option_t)(UTF8PROC_STABLE |
 		UTF8PROC_DECOMPOSE | UTF8PROC_COMPAT));
 	return retval;
 }
 
-UTF8PROC_DLLEXPORT utf8proc_uint8_t *utf8proc_NFKC(const utf8proc_uint8_t *str) {
+UTF8PROC_DLLEXPORT utf8proc_uint8_t *utf8proc_NFKC(const utf8proc_uint8_t *str, utf8proc_ssize_t len) {
 	utf8proc_uint8_t *retval;
-	utf8proc_map(str, 0, &retval, (utf8proc_option_t)(UTF8PROC_NULLTERM | UTF8PROC_STABLE |
+	utf8proc_map(str, len, &retval, (utf8proc_option_t)(UTF8PROC_STABLE |
 		UTF8PROC_COMPOSE | UTF8PROC_COMPAT));
 	return retval;
 }
 
-UTF8PROC_DLLEXPORT utf8proc_uint8_t *utf8proc_NFKC_Casefold(const utf8proc_uint8_t *str) {
+UTF8PROC_DLLEXPORT utf8proc_uint8_t *utf8proc_NFKC_Casefold(const utf8proc_uint8_t *str, utf8proc_ssize_t len) {
 	utf8proc_uint8_t *retval;
-	utf8proc_map(str, 0, &retval, (utf8proc_option_t)(UTF8PROC_NULLTERM | UTF8PROC_STABLE |
+	utf8proc_map(str, len, &retval, (utf8proc_option_t)(UTF8PROC_STABLE |
 		UTF8PROC_COMPOSE | UTF8PROC_COMPAT | UTF8PROC_CASEFOLD | UTF8PROC_IGNORE));
 	return retval;
 }

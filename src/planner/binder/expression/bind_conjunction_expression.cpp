@@ -3,8 +3,7 @@
 #include "duckdb/planner/expression/bound_conjunction_expression.hpp"
 #include "duckdb/planner/expression_binder.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
 BindResult ExpressionBinder::BindExpression(ConjunctionExpression &expr, idx_t depth) {
 	// first try to bind the children of the case expression
@@ -21,9 +20,10 @@ BindResult ExpressionBinder::BindExpression(ConjunctionExpression &expr, idx_t d
 	auto result = make_unique<BoundConjunctionExpression>(expr.type);
 	for (auto &child_expr : expr.children) {
 		auto &child = (BoundExpression &)*child_expr;
-		result->children.push_back(
-		    BoundCastExpression::AddCastToType(move(child.expr), child.sql_type, SQLType(SQLTypeId::BOOLEAN)));
+		result->children.push_back(BoundCastExpression::AddCastToType(move(child.expr), LogicalType::BOOLEAN));
 	}
 	// now create the bound conjunction expression
-	return BindResult(move(result), SQLType(SQLTypeId::BOOLEAN));
+	return BindResult(move(result));
 }
+
+} // namespace duckdb

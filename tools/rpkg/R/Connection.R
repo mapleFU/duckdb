@@ -1,55 +1,51 @@
+#' DuckDB driver class
+#'
+#' Implements \linkS4class{DBIDriver}.
+#'
+#' @aliases duckdb_driver
+#' @keywords internal
+#' @export
+setClass("duckdb_driver", contains = "DBIDriver", slots = list(database_ref = "externalptr", dbdir = "character", read_only = "logical"))
+
+#' DuckDB connection class
+#'
+#' Implements \linkS4class{DBIConnection}.
+#'
+#' @aliases duckdb_connection
+#' @keywords internal
+#' @export
+setClass("duckdb_connection",
+  contains = "DBIConnection",
+  slots = list(conn_ref = "externalptr",
+               driver = "duckdb_driver",
+               debug = "logical",
+               timezone_out = "character",
+               tz_out_convert = "character")
+)
+
 duckdb_connection <- function(duckdb_driver, debug) {
   new(
     "duckdb_connection",
     conn_ref = .Call(duckdb_connect_R, duckdb_driver@database_ref),
     driver = duckdb_driver,
-    debug = debug
+    debug = debug,
+    timezone_out = "UTC",
+    tz_out_convert = "with"
   )
 }
 
-#' Register a R data.frame as a virtual table (view) in DuckDB without copying the data
-#' @rdname duckdb_connection
-#' @param conn A DuckDB connection, created by `dbConnect()`.
-#' @param name The name for the virtual table that is registered
-#' @param df A `data.frame` with the data for the virtual table
-#' @export
-duckdb_register <- function(conn, name, df) {
-  stopifnot(dbIsValid(conn))
-  .Call(duckdb_register_R, conn@conn_ref, as.character(name), as.data.frame(df))
-  invisible(TRUE)
-}
-
-#' Unregister a virtual table referring to a data.frame
-#' @rdname duckdb_connection
-#' @param conn A DuckDB connection, created by `dbConnect()`.
-#' @param name The name for the virtual table previously registered using `duckdb_register()`.
-#' @export
-duckdb_unregister <- function(conn, name) {
-  stopifnot(dbIsValid(conn))
-  .Call(duckdb_unregister_R, conn@conn_ref, as.character(name))
-  invisible(TRUE)
-}
-
-#' DuckDB connection class
-#' @rdname duckdb_connection
-#' @export
-setClass(
-  "duckdb_connection",
-  contains = "DBIConnection",
-  slots = list(dbdir = "character", conn_ref = "externalptr", driver = "duckdb_driver", debug = "logical")
-)
-
-#' @rdname duckdb_connection
+#' @rdname duckdb_connection-class
 #' @inheritParams methods::show
 #' @export
 setMethod(
   "show", "duckdb_connection",
   function(object) {
-    cat(sprintf("<duckdb_connection %s driver=%s>\n", extptr_str(object@conn_ref), drv_to_string(object@driver)))
+    message(sprintf("<duckdb_connection %s driver=%s>", extptr_str(object@conn_ref), drv_to_string(object@driver)))
+    invisible(NULL)
   }
 )
 
-#' @rdname duckdb_connection
+#' @rdname duckdb_connection-class
 #' @inheritParams DBI::dbIsValid
 #' @export
 setMethod(
@@ -68,44 +64,25 @@ setMethod(
   }
 )
 
-#' @rdname duckdb_connection
-#' @param shutdown Shut down the DuckDB database instance that this connection refers to.
-#' @export
-setMethod(
-  "dbDisconnect", "duckdb_connection",
-  function(conn, ..., shutdown = FALSE) {
-    if (!dbIsValid(conn)) {
-      warning("Connection already closed.", call. = FALSE)
-    }
-    .Call(duckdb_disconnect_R, conn@conn_ref)
-    if (shutdown) {
-      duckdb_shutdown(conn@driver)
-    }
-
-    invisible(TRUE)
-  }
-)
-
-#' @rdname duckdb_connection
+#' @rdname duckdb_connection-class
 #' @inheritParams DBI::dbSendQuery
+#' @inheritParams DBI::dbBind
+#' @param arrow Whether the query should be returned as an Arrow Table
 #' @export
 setMethod(
   "dbSendQuery", c("duckdb_connection", "character"),
-  function(conn, statement, ...) {
+  function(conn, statement, params = NULL, ..., arrow=FALSE) {
     if (conn@debug) {
-      cat("Q ", statement, "\n")
+      message("Q ", statement)
     }
     statement <- enc2utf8(statement)
     stmt_lst <- .Call(duckdb_prepare_R, conn@conn_ref, statement)
 
     res <- duckdb_result(
       connection = conn,
-      stmt_lst = stmt_lst
+      stmt_lst = stmt_lst,
+      arrow = arrow
     )
-    params <- list(...)
-    if (length(params) == 1 && class(params[[1]])[[1]] == "list") {
-      params <- params[[1]]
-    }
     if (length(params) > 0) {
       dbBind(res, params)
     }
@@ -113,7 +90,7 @@ setMethod(
   }
 )
 
-#' @rdname duckdb_connection
+#' @rdname duckdb_connection-class
 #' @inheritParams DBI::dbDataType
 #' @export
 setMethod(
@@ -127,7 +104,7 @@ duckdb_random_string <- function(x) {
   paste(sample(letters, 10, replace = TRUE), collapse = "")
 }
 
-#' @rdname duckdb_connection
+#' @rdname duckdb_connection-class
 #' @inheritParams DBI::dbWriteTable
 #' @param row.names Whether the row.names of the data.frame should be preserved
 #' @param overwrite If a table with the given name already exists, should it be overwritten?
@@ -156,16 +133,15 @@ setMethod(
       stop("Setting both overwrite and append makes no sense")
     }
 
-    # oof
-    if (!is.null(field.types) &&
-      (
-        !is.character(field.types) ||
-          any(is.na(names(field.types))) ||
-          length(unique(names(field.types))) != length(names(field.types)) ||
-          append
-      )) {
-      stop("invalid field.types argument")
+    if (!is.null(field.types)) {
+      if (!(is.character(field.types) && !is.null(names(field.types)) && !anyDuplicated(names(field.types)))) {
+        stop("`field.types` must be a named character vector with unique names, or NULL")
+      }
     }
+    if (append && !is.null(field.types)) {
+      stop("Cannot specify `field.types` with `append = TRUE`")
+    }
+
     value <- as.data.frame(value)
     if (!is.data.frame(value)) {
       stop("need a data frame as parameter")
@@ -173,6 +149,12 @@ setMethod(
 
     # use Kirill's magic, convert rownames to additional column
     value <- sqlRownamesToColumn(value, row.names)
+
+    is_factor <- vapply(value, is.factor, logical(1))
+    value[is_factor] <- lapply(value[is_factor], function(x) {
+      levels(x) <- enc2utf8(levels(x))
+      as.character(x)
+    })
 
     if (dbExistsTable(conn, name)) {
       if (overwrite) {
@@ -182,13 +164,9 @@ setMethod(
         stop(
           "Table ",
           name,
-          " already exists. Set overwrite=TRUE if you want
-                  to remove the existing table. Set append=TRUE if you would like to add the new data to the
-                  existing table."
+          " already exists. Set `overwrite = TRUE` if you want to remove the existing table. ",
+          "Set `append = TRUE` if you would like to add the new data to the existing table."
         )
-      }
-      if (append && any(names(value) != dbListFields(conn, name))) {
-        stop("Column name mismatch for append")
       }
     }
     table_name <- dbQuoteIdentifier(conn, name)
@@ -199,12 +177,7 @@ setMethod(
         vapply(value, dbDataType, dbObj = conn, FUN.VALUE = "character")
 
       if (!is.null(field.types)) {
-        mapped_column_types <- field.types[names(value)]
-        if (any(is.na(mapped_column_types)) ||
-          length(mapped_column_types) != length(names(value))) {
-          stop("Column name/type mismatch")
-        }
-        column_types <- mapped_column_types
+        column_types[names(field.types)] <- field.types
       }
 
       temp_str <- ""
@@ -216,27 +189,63 @@ setMethod(
       )))
     }
 
-    if (length(value[[1]])) {
-      classes <- unlist(lapply(value, function(v) {
-        class(v)[[1]]
-      }))
-      for (c in names(classes[classes == "character"])) {
-        value[[c]] <- enc2utf8(value[[c]])
-      }
-      for (c in names(classes[classes == "factor"])) {
-        levels(value[[c]]) <- enc2utf8(levels(value[[c]]))
-      }
-    }
-    view_name <- sprintf("_duckdb_append_view_%s", duckdb_random_string())
-    on.exit(duckdb_unregister(conn, view_name))
-    duckdb_register(conn, view_name, value)
-    dbExecute(conn, sprintf("INSERT INTO %s SELECT * FROM %s", table_name, view_name))
-
+    dbAppendTable(conn, name, value)
     invisible(TRUE)
   }
 )
 
-#' @rdname duckdb_connection
+#' @rdname duckdb_connection-class
+#' @inheritParams DBI::dbAppendTable
+#' @export
+setMethod(
+  "dbAppendTable", "duckdb_connection",
+  function(conn, name, value, ..., row.names = NULL) {
+    if (!is.null(row.names)) {
+      stop("Can't pass `row.names` to `dbAppendTable()`")
+    }
+
+    if (!identical(names(value), dbListFields(conn, name))) {
+      stop("Column name mismatch for append")
+    }
+
+    value <- encode_values(value)
+
+    if (nrow(value)) {
+      table_name <- dbQuoteIdentifier(conn, name)
+
+      view_name <- sprintf("_duckdb_append_view_%s", duckdb_random_string())
+      on.exit(duckdb_unregister(conn, view_name))
+      duckdb_register(conn, view_name, value)
+      dbExecute(conn, sprintf("INSERT INTO %s SELECT * FROM %s", table_name, view_name))
+
+      rs_on_connection_updated(conn, hint=paste0("Updated table'", table_name,"'"))
+    }
+
+    invisible(nrow(value))
+  }
+)
+
+encode_values <- function(value) {
+  is_factor <- vapply(value, is.factor, logical(1))
+  if (any(is_factor)) {
+    warning("Factors converted to character")
+  }
+
+  value[is_factor] <- lapply(value[is_factor], function(x) {
+    levels(x) <- enc2utf8(levels(x))
+    as.character(x)
+  })
+
+  is_character <- vapply(value, is.character, logical(1))
+  value[is_character] <- lapply(value[is_character], enc2utf8)
+
+  is_posixlt <- vapply(value, inherits, "POSIXlt", FUN.VALUE = logical(1))
+  value[is_posixlt] <- lapply(value[is_posixlt], as.POSIXct)
+
+  value
+}
+
+#' @rdname duckdb_connection-class
 #' @inheritParams DBI::dbListTables
 #' @export
 setMethod(
@@ -245,13 +254,13 @@ setMethod(
     dbGetQuery(
       conn,
       SQL(
-        "SELECT name FROM sqlite_master() WHERE type='table' ORDER BY name"
+        "SELECT name FROM sqlite_master WHERE type='table' OR type='view' ORDER BY name"
       )
     )[[1]]
   }
 )
 
-#' @rdname duckdb_connection
+#' @rdname duckdb_connection-class
 #' @inheritParams DBI::dbExistsTable
 #' @export
 setMethod(
@@ -283,7 +292,7 @@ setMethod(
   }
 )
 
-#' @rdname duckdb_connection
+#' @rdname duckdb_connection-class
 #' @inheritParams DBI::dbListFields
 #' @export
 setMethod(
@@ -300,29 +309,32 @@ setMethod(
   }
 )
 
-#' @rdname duckdb_connection
+#' @rdname duckdb_connection-class
 #' @inheritParams DBI::dbRemoveTable
 #' @export
 setMethod(
   "dbRemoveTable", c("duckdb_connection", "character"),
-  function(conn, name, ...) {
+  function(conn, name, ..., fail_if_missing = TRUE) {
+    sql <- paste0("DROP TABLE ", if (!fail_if_missing) "IF EXISTS ", "?")
     dbExecute(
       conn,
-      sqlInterpolate(conn, "DROP TABLE ?", dbQuoteIdentifier(conn, name))
+      sqlInterpolate(conn, sql, dbQuoteIdentifier(conn, name))
     )
+    rs_on_connection_updated(conn, "Table removed")
     invisible(TRUE)
   }
 )
 
-#' @rdname duckdb_connection
+#' @rdname duckdb_connection-class
 #' @inheritParams DBI::dbGetInfo
 #' @export
 setMethod(
   "dbGetInfo", "duckdb_connection",
   function(dbObj, ...) {
+    info <- dbGetInfo(dbObj@driver)
     list(
-      dbname = dbObj@dbdir,
-      db.version = NA,
+      dbname = info$dbname,
+      db.version = info$driver.version,
       username = NA,
       host = NA,
       port = NA
@@ -330,7 +342,7 @@ setMethod(
   }
 )
 
-#' @rdname duckdb_connection
+#' @rdname duckdb_connection-class
 #' @inheritParams DBI::dbBegin
 #' @export
 setMethod(
@@ -341,7 +353,7 @@ setMethod(
   }
 )
 
-#' @rdname duckdb_connection
+#' @rdname duckdb_connection-class
 #' @inheritParams DBI::dbCommit
 #' @export
 setMethod(
@@ -352,7 +364,7 @@ setMethod(
   }
 )
 
-#' @rdname duckdb_connection
+#' @rdname duckdb_connection-class
 #' @inheritParams DBI::dbRollback
 #' @export
 setMethod(
@@ -363,69 +375,64 @@ setMethod(
   }
 )
 
-#' Directly reads a CSV file into DuckDB, tries to detect and create the correct schema for it.
-#' @rdname duckdb_connection
-#' @param files One or more CSV file names, should all have the same structure though
-#' @param tablename The database table the files should be read into
-#' @param header Whether or not the CSV files have a separate header in the first line
-#' @param na.strings Which strings in the CSV files should be considered to be NULL
-#' @param nrow.check How many rows should be read from the CSV file to figure out data types
-#' @param delim Which field separator should be used
-#' @param quote Which quote character is used for columns in the CSV file
-#' @param col.names Override the detected or generated column names
-#' @param lower.case.names Transform column names to lower case
-#' @param sep Alias for delim for compatibility
-#' @param transaction Should a transaction be used for the entire operation
+#' @rdname duckdb_connection-class
 #' @export
-read_csv_duckdb <- duckdb.read.csv <- function(conn, files, tablename, header = TRUE, na.strings = "", nrow.check = 500,
-                                               delim = ",", quote = "\"", col.names = NULL, lower.case.names = FALSE, sep = delim, transaction = TRUE, ...) {
+setMethod(
+  "dbQuoteLiteral", signature("duckdb_connection"),
+  function(conn, x, ...) {
+    # Switchpatching to avoid ambiguous S4 dispatch, so that our method
+    # is used only if no alternatives are available.
 
-  if (length(na.strings) > 1) stop("na.strings must be of length 1")
-  if (!missing(sep)) delim <- sep
-
-  headers <- lapply(files, utils::read.csv, sep = delim, na.strings = na.strings, quote = quote, nrows = nrow.check, header = header, ...)
-  if (length(files) > 1) {
-    nn <- sapply(headers, ncol)
-    if (!all(nn == nn[1])) stop("Files have different numbers of columns")
-    nms <- sapply(headers, names)
-    if (!all(nms == nms[, 1])) stop("Files have different variable names")
-    types <- sapply(headers, function(df) sapply(df, dbDataType, dbObj = conn))
-    if (!all(types == types[, 1])) stop("Files have different variable types")
-  }
-
-  if (transaction) {
-    dbBegin(conn)
-    on.exit(tryCatch(dbRollback(conn), error = function(e) {}))
-  }
-
-  tablename <- dbQuoteIdentifier(conn, tablename)
-
-  if (!dbExistsTable(conn, tablename)) {
-    if (lower.case.names) names(headers[[1]]) <- tolower(names(headers[[1]]))
-    if (!is.null(col.names)) {
-      if (lower.case.names) {
-        warning("Ignoring lower.case.names parameter as overriding col.names are supplied.")
-      }
-      col.names <- as.character(col.names)
-      if (length(unique(col.names)) != length(names(headers[[1]]))) {
-        stop(
-          "You supplied ", length(unique(col.names)), " unique column names, but file has ",
-          length(names(headers[[1]])), " columns."
-        )
-      }
-      names(headers[[1]]) <- col.names
+    if (is(x, "SQL")) {
+      return(x)
     }
-    dbWriteTable(conn, tablename, headers[[1]][FALSE, , drop = FALSE])
-  }
 
-  for (i in seq_along(files)) {
-    thefile <- dbQuoteString(conn, encodeString(normalizePath(files[i])))
-    dbExecute(conn, sprintf("COPY %s FROM %s (DELIMITER %s, QUOTE %s, HEADER %s, NULL %s)", tablename, thefile, dbQuoteString(conn, delim), dbQuoteString(conn, quote), tolower(header), dbQuoteString(conn, na.strings[1])))
-  }
-  dbGetQuery(conn, paste("SELECT COUNT(*) FROM", tablename))[[1]]
+    if (is.factor(x)) {
+      return(dbQuoteString(conn, as.character(x)))
+    }
 
-  if (transaction) {
-    dbCommit(conn)
-    on.exit(NULL)
+    if (is.character(x)) {
+      return(dbQuoteString(conn, x))
+    }
+
+    if (inherits(x, "POSIXt")) {
+      out <- dbQuoteString(
+        conn,
+        strftime(as.POSIXct(x), "%Y-%m-%d %H:%M:%S", tz = "UTC")
+      )
+
+      return(SQL(paste0(out, "::timestamp")))
+    }
+
+    if (inherits(x, "Date")) {
+      out <- callNextMethod()
+      return(SQL(paste0(out, "::date")))
+    }
+
+    if (inherits(x, "difftime")) {
+      out <- callNextMethod()
+      return(SQL(paste0(out, "::time")))
+    }
+
+    if (is.list(x)) {
+      blob_data <- vapply(
+        x,
+        function(x) {
+          if (is.null(x)) {
+            "NULL"
+          } else if (is.raw(x)) {
+            paste0("X'", paste(format(x), collapse = ""), "'")
+          } else {
+            stop("Lists must contain raw vectors or NULL", call. = FALSE)
+          }
+        },
+        character(1)
+      )
+      return(SQL(blob_data, names = names(x)))
+    }
+
+    x <- as.character(x)
+    x[is.na(x)] <- "NULL"
+    SQL(x, names = names(x))
   }
-}
+)

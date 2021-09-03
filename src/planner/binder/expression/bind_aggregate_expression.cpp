@@ -1,26 +1,42 @@
 #include "duckdb/catalog/catalog_entry/aggregate_function_catalog_entry.hpp"
+#include "duckdb/common/pair.hpp"
 #include "duckdb/parser/expression/function_expression.hpp"
+#include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression_binder/aggregate_binder.hpp"
 #include "duckdb/planner/expression_binder/select_binder.hpp"
 #include "duckdb/planner/query_node/bound_select_node.hpp"
+#include "duckdb/main/config.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
 BindResult SelectBinder::BindAggregate(FunctionExpression &aggr, AggregateFunctionCatalogEntry *func, idx_t depth) {
 	// first bind the child of the aggregate expression (if any)
 	this->bound_aggregate = true;
-
+	unique_ptr<Expression> bound_filter;
 	AggregateBinder aggregate_binder(binder, context);
-	string error;
-	for (idx_t i = 0; i < aggr.children.size(); i++) {
-		aggregate_binder.BindChild(aggr.children[i], 0, error);
+	string error, filter_error;
+
+	// Now we bind the filter (if any)
+	if (aggr.filter) {
+		aggregate_binder.BindChild(aggr.filter, 0, error);
 	}
+
+	for (auto &child : aggr.children) {
+		aggregate_binder.BindChild(child, 0, error);
+	}
+
+	// Bind the ORDER BYs, if any
+	if (aggr.order_bys && !aggr.order_bys->orders.empty()) {
+		for (auto &order : aggr.order_bys->orders) {
+			aggregate_binder.BindChild(order.expression, 0, error);
+		}
+	}
+
 	if (!error.empty()) {
 		// failed to bind child
-		if (aggregate_binder.BoundColumns()) {
+		if (aggregate_binder.HasBoundColumns()) {
 			for (idx_t i = 0; i < aggr.children.size(); i++) {
 				// however, we bound columns!
 				// that means this aggregation belongs to this node
@@ -33,41 +49,75 @@ BindResult SelectBinder::BindAggregate(FunctionExpression &aggr, AggregateFuncti
 				auto &bound_expr = (BoundExpression &)*aggr.children[i];
 				ExtractCorrelatedExpressions(binder, *bound_expr.expr);
 			}
+			if (aggr.filter) {
+				bool success = aggregate_binder.BindCorrelatedColumns(aggr.filter);
+				// if there is still an error after this, we could not successfully bind the aggregate
+				if (!success) {
+					throw BinderException(error);
+				}
+				auto &bound_expr = (BoundExpression &)*aggr.filter;
+				ExtractCorrelatedExpressions(binder, *bound_expr.expr);
+			}
+			if (aggr.order_bys && !aggr.order_bys->orders.empty()) {
+				for (auto &order : aggr.order_bys->orders) {
+					bool success = aggregate_binder.BindCorrelatedColumns(order.expression);
+					if (!success) {
+						throw BinderException(error);
+					}
+					auto &bound_expr = (BoundExpression &)*order.expression;
+					ExtractCorrelatedExpressions(binder, *bound_expr.expr);
+				}
+			}
 		} else {
 			// we didn't bind columns, try again in children
 			return BindResult(error);
 		}
 	}
+	if (!filter_error.empty()) {
+		return BindResult(filter_error);
+	}
+
+	if (aggr.filter) {
+		auto &child = (BoundExpression &)*aggr.filter;
+		bound_filter = move(child.expr);
+	}
 	// all children bound successfully
 	// extract the children and types
-	vector<SQLType> types;
-	vector<SQLType> arguments;
+	vector<LogicalType> types;
+	vector<LogicalType> arguments;
 	vector<unique_ptr<Expression>> children;
 	for (idx_t i = 0; i < aggr.children.size(); i++) {
 		auto &child = (BoundExpression &)*aggr.children[i];
-		types.push_back(child.sql_type);
-		arguments.push_back(child.sql_type);
+		types.push_back(child.expr->return_type);
+		arguments.push_back(child.expr->return_type);
 		children.push_back(move(child.expr));
 	}
 
 	// bind the aggregate
-	idx_t best_function = Function::BindFunction(func->name, func->functions, types);
+	idx_t best_function = Function::BindFunction(func->name, func->functions, types, error);
+	if (best_function == INVALID_INDEX) {
+		throw BinderException(binder.FormatError(aggr, error));
+	}
 	// found a matching function!
 	auto &bound_function = func->functions[best_function];
-	// check if we need to add casts to the children
-	bound_function.CastToFunctionArguments(children, types);
 
-	// create the aggregate
-	auto aggregate = make_unique<BoundAggregateExpression>(GetInternalType(bound_function.return_type), bound_function,
-	                                                       aggr.distinct);
-	aggregate->children = move(children);
-	aggregate->arguments = arguments;
-
-	auto return_type = bound_function.return_type;
-
-	if (bound_function.bind) {
-		aggregate->bind_info = bound_function.bind(*aggregate, context, return_type);
+	// Bind any sort columns, unless the aggregate is order-insensitive
+	auto order_bys = make_unique<BoundOrderModifier>();
+	if (bound_function.order_sensitive && !aggr.order_bys->orders.empty()) {
+		auto &config = DBConfig::GetConfig(context);
+		for (auto &order : aggr.order_bys->orders) {
+			auto &order_expr = (BoundExpression &)*order.expression;
+			const auto sense = (order.type == OrderType::ORDER_DEFAULT) ? config.default_order_type : order.type;
+			const auto null_order =
+			    (order.null_order == OrderByNullType::ORDER_DEFAULT) ? config.default_null_order : order.null_order;
+			order_bys->orders.emplace_back(BoundOrderByNode(sense, null_order, move(order_expr.expr)));
+		}
 	}
+
+	auto aggregate = AggregateFunction::BindAggregateFunction(context, bound_function, move(children),
+	                                                          move(bound_filter), aggr.distinct, move(order_bys));
+
+	auto return_type = aggregate->return_type;
 
 	// check for all the aggregates if this aggregate already exists
 	idx_t aggr_index;
@@ -83,9 +133,10 @@ BindResult SelectBinder::BindAggregate(FunctionExpression &aggr, AggregateFuncti
 	}
 
 	// now create a column reference referring to the aggregate
-	auto colref = make_unique<BoundColumnRefExpression>(
-	    aggr.alias.empty() ? node.aggregates[aggr_index]->ToString() : aggr.alias,
-	    node.aggregates[aggr_index]->return_type, ColumnBinding(node.aggregate_index, aggr_index), depth);
+	auto colref =
+	    make_unique<BoundColumnRefExpression>(aggr.alias.empty() ? node.aggregates[aggr_index]->ToString() : aggr.alias,
+	                                          return_type, ColumnBinding(node.aggregate_index, aggr_index), depth);
 	// move the aggregate expression into the set of bound aggregates
-	return BindResult(move(colref), return_type);
+	return BindResult(move(colref));
 }
+} // namespace duckdb

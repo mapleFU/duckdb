@@ -3,31 +3,45 @@
 #include "duckdb/planner/expression/bound_case_expression.hpp"
 #include "duckdb/common/types/chunk_collection.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
 void Case(Vector &res_true, Vector &res_false, Vector &result, SelectionVector &tside, idx_t tcount,
           SelectionVector &fside, idx_t fcount);
 
-unique_ptr<ExpressionState> ExpressionExecutor::InitializeState(BoundCaseExpression &expr,
+struct CaseExpressionState : public ExpressionState {
+	CaseExpressionState(const Expression &expr, ExpressionExecutorState &root)
+	    : ExpressionState(expr, root), true_sel(STANDARD_VECTOR_SIZE), false_sel(STANDARD_VECTOR_SIZE) {
+	}
+
+	SelectionVector true_sel;
+	SelectionVector false_sel;
+};
+
+unique_ptr<ExpressionState> ExpressionExecutor::InitializeState(const BoundCaseExpression &expr,
                                                                 ExpressionExecutorState &root) {
-	auto result = make_unique<ExpressionState>(expr, root);
+	auto result = make_unique<CaseExpressionState>(expr, root);
 	result->AddChild(expr.check.get());
 	result->AddChild(expr.result_if_true.get());
 	result->AddChild(expr.result_if_false.get());
-	return result;
+	result->Finalize();
+	return move(result);
 }
 
-void ExpressionExecutor::Execute(BoundCaseExpression &expr, ExpressionState *state, const SelectionVector *sel,
+void ExpressionExecutor::Execute(const BoundCaseExpression &expr, ExpressionState *state_p, const SelectionVector *sel,
                                  idx_t count, Vector &result) {
-	Vector res_true(expr.result_if_true->return_type), res_false(expr.result_if_false->return_type);
+	auto state = (CaseExpressionState *)state_p;
+
+	state->intermediate_chunk.Reset();
+	auto &res_true = state->intermediate_chunk.data[1];
+	auto &res_false = state->intermediate_chunk.data[2];
 
 	auto check_state = state->child_states[0].get();
 	auto res_true_state = state->child_states[1].get();
 	auto res_false_state = state->child_states[2].get();
 
 	// first execute the check expression
-	SelectionVector true_sel(STANDARD_VECTOR_SIZE), false_sel(STANDARD_VECTOR_SIZE);
+	auto &true_sel = state->true_sel;
+	auto &false_sel = state->false_sel;
 	idx_t tcount = Select(*expr.check, check_state, sel, count, &true_sel, &false_sel);
 	idx_t fcount = count - tcount;
 	if (fcount == 0) {
@@ -48,14 +62,16 @@ void ExpressionExecutor::Execute(BoundCaseExpression &expr, ExpressionState *sta
 	}
 }
 
-template <class T> void fill_loop(Vector &vector, Vector &result, SelectionVector &sel, sel_t count) {
+template <class T>
+void TemplatedFillLoop(Vector &vector, Vector &result, SelectionVector &sel, sel_t count) {
+	result.SetVectorType(VectorType::FLAT_VECTOR);
 	auto res = FlatVector::GetData<T>(result);
-	auto &result_nullmask = FlatVector::Nullmask(result);
-	if (vector.vector_type == VectorType::CONSTANT_VECTOR) {
+	auto &result_mask = FlatVector::Validity(result);
+	if (vector.GetVectorType() == VectorType::CONSTANT_VECTOR) {
 		auto data = ConstantVector::GetData<T>(vector);
 		if (ConstantVector::IsNull(vector)) {
 			for (idx_t i = 0; i < count; i++) {
-				result_nullmask[sel.get_index(i)] = true;
+				result_mask.SetInvalid(sel.get_index(i));
 			}
 		} else {
 			for (idx_t i = 0; i < count; i++) {
@@ -71,67 +87,116 @@ template <class T> void fill_loop(Vector &vector, Vector &result, SelectionVecto
 			auto res_idx = sel.get_index(i);
 
 			res[res_idx] = data[source_idx];
-			result_nullmask[res_idx] = (*vdata.nullmask)[source_idx];
+			result_mask.Set(res_idx, vdata.validity.RowIsValid(source_idx));
+		}
+	}
+}
+
+void ValidityFillLoop(Vector &vector, Vector &result, SelectionVector &sel, sel_t count) {
+	result.SetVectorType(VectorType::FLAT_VECTOR);
+	auto &result_mask = FlatVector::Validity(result);
+	if (vector.GetVectorType() == VectorType::CONSTANT_VECTOR) {
+		if (ConstantVector::IsNull(vector)) {
+			for (idx_t i = 0; i < count; i++) {
+				result_mask.SetInvalid(sel.get_index(i));
+			}
+		}
+	} else {
+		VectorData vdata;
+		vector.Orrify(count, vdata);
+		for (idx_t i = 0; i < count; i++) {
+			auto source_idx = vdata.sel->get_index(i);
+			auto res_idx = sel.get_index(i);
+
+			result_mask.Set(res_idx, vdata.validity.RowIsValid(source_idx));
 		}
 	}
 }
 
 template <class T>
-void case_loop(Vector &res_true, Vector &res_false, Vector &result, SelectionVector &tside, idx_t tcount,
-               SelectionVector &fside, idx_t fcount) {
-	fill_loop<T>(res_true, result, tside, tcount);
-	fill_loop<T>(res_false, result, fside, fcount);
+void TemplatedCaseLoop(Vector &res_true, Vector &res_false, Vector &result, SelectionVector &tside, idx_t tcount,
+                       SelectionVector &fside, idx_t fcount) {
+	TemplatedFillLoop<T>(res_true, result, tside, tcount);
+	TemplatedFillLoop<T>(res_false, result, fside, fcount);
+}
+
+void ValidityCaseLoop(Vector &res_true, Vector &res_false, Vector &result, SelectionVector &tside, idx_t tcount,
+                      SelectionVector &fside, idx_t fcount) {
+	ValidityFillLoop(res_true, result, tside, tcount);
+	ValidityFillLoop(res_false, result, fside, fcount);
 }
 
 void Case(Vector &res_true, Vector &res_false, Vector &result, SelectionVector &tside, idx_t tcount,
           SelectionVector &fside, idx_t fcount) {
-	assert(res_true.type == res_false.type && res_true.type == result.type);
+	D_ASSERT(res_true.GetType() == res_false.GetType() && res_true.GetType() == result.GetType());
 
-	switch (result.type) {
-	case TypeId::BOOL:
-	case TypeId::INT8:
-		case_loop<int8_t>(res_true, res_false, result, tside, tcount, fside, fcount);
+	switch (result.GetType().InternalType()) {
+	case PhysicalType::BOOL:
+	case PhysicalType::INT8:
+		TemplatedCaseLoop<int8_t>(res_true, res_false, result, tside, tcount, fside, fcount);
 		break;
-	case TypeId::INT16:
-		case_loop<int16_t>(res_true, res_false, result, tside, tcount, fside, fcount);
+	case PhysicalType::INT16:
+		TemplatedCaseLoop<int16_t>(res_true, res_false, result, tside, tcount, fside, fcount);
 		break;
-	case TypeId::INT32:
-		case_loop<int32_t>(res_true, res_false, result, tside, tcount, fside, fcount);
+	case PhysicalType::INT32:
+		TemplatedCaseLoop<int32_t>(res_true, res_false, result, tside, tcount, fside, fcount);
 		break;
-	case TypeId::INT64:
-		case_loop<int64_t>(res_true, res_false, result, tside, tcount, fside, fcount);
+	case PhysicalType::INT64:
+		TemplatedCaseLoop<int64_t>(res_true, res_false, result, tside, tcount, fside, fcount);
 		break;
-	case TypeId::FLOAT:
-		case_loop<float>(res_true, res_false, result, tside, tcount, fside, fcount);
+	case PhysicalType::UINT8:
+		TemplatedCaseLoop<uint8_t>(res_true, res_false, result, tside, tcount, fside, fcount);
 		break;
-	case TypeId::DOUBLE:
-		case_loop<double>(res_true, res_false, result, tside, tcount, fside, fcount);
+	case PhysicalType::UINT16:
+		TemplatedCaseLoop<uint16_t>(res_true, res_false, result, tside, tcount, fside, fcount);
 		break;
-	case TypeId::VARCHAR:
-		case_loop<string_t>(res_true, res_false, result, tside, tcount, fside, fcount);
+	case PhysicalType::UINT32:
+		TemplatedCaseLoop<uint32_t>(res_true, res_false, result, tside, tcount, fside, fcount);
+		break;
+	case PhysicalType::UINT64:
+		TemplatedCaseLoop<uint64_t>(res_true, res_false, result, tside, tcount, fside, fcount);
+		break;
+	case PhysicalType::INT128:
+		TemplatedCaseLoop<hugeint_t>(res_true, res_false, result, tside, tcount, fside, fcount);
+		break;
+	case PhysicalType::FLOAT:
+		TemplatedCaseLoop<float>(res_true, res_false, result, tside, tcount, fside, fcount);
+		break;
+	case PhysicalType::DOUBLE:
+		TemplatedCaseLoop<double>(res_true, res_false, result, tside, tcount, fside, fcount);
+		break;
+	case PhysicalType::INTERVAL:
+		TemplatedCaseLoop<interval_t>(res_true, res_false, result, tside, tcount, fside, fcount);
+		break;
+	case PhysicalType::VARCHAR:
+		TemplatedCaseLoop<string_t>(res_true, res_false, result, tside, tcount, fside, fcount);
 		StringVector::AddHeapReference(result, res_true);
 		StringVector::AddHeapReference(result, res_false);
 		break;
-	case TypeId::LIST: {
-		auto result_cc = make_unique<ChunkCollection>();
-		ListVector::SetEntry(result, move(result_cc));
-
-		auto &result_child = ListVector::GetEntry(result);
+	case PhysicalType::STRUCT: {
+		auto &res_true_entries = StructVector::GetEntries(res_true);
+		auto &res_false_entries = StructVector::GetEntries(res_false);
+		auto &result_entries = StructVector::GetEntries(result);
+		D_ASSERT(res_true_entries.size() == res_false_entries.size() &&
+		         res_true_entries.size() == result_entries.size());
+		ValidityCaseLoop(res_true, res_false, result, tside, tcount, fside, fcount);
+		for (idx_t i = 0; i < res_true_entries.size(); i++) {
+			Case(*res_true_entries[i], *res_false_entries[i], *result_entries[i], tside, tcount, fside, fcount);
+		}
+		break;
+	}
+	case PhysicalType::LIST: {
 		idx_t offset = 0;
-		if (ListVector::HasEntry(res_true)) {
-			auto &true_child = ListVector::GetEntry(res_true);
-			assert(true_child.types.size() == 1);
-			offset += true_child.count;
-			result_child.Append(true_child);
-		}
-		if (ListVector::HasEntry(res_false)) {
-			auto &false_child = ListVector::GetEntry(res_false);
-			assert(false_child.types.size() == 1);
-			result_child.Append(false_child);
-		}
+
+		auto &true_child = ListVector::GetEntry(res_true);
+		offset += ListVector::GetListSize(res_true);
+		ListVector::Append(result, true_child, ListVector::GetListSize(res_true));
+
+		auto &false_child = ListVector::GetEntry(res_false);
+		ListVector::Append(result, false_child, ListVector::GetListSize(res_false));
 
 		// all the false offsets need to be incremented by true_child.count
-		fill_loop<list_entry_t>(res_true, result, tside, tcount);
+		TemplatedFillLoop<list_entry_t>(res_true, result, tside, tcount);
 
 		// FIXME the nullmask here is likely borked
 		// TODO uuugly
@@ -140,7 +205,7 @@ void Case(Vector &res_true, Vector &res_false, Vector &result, SelectionVector &
 
 		auto data = (list_entry_t *)fdata.data;
 		auto res = FlatVector::GetData<list_entry_t>(result);
-		auto &mask = FlatVector::Nullmask(result);
+		auto &mask = FlatVector::Validity(result);
 
 		for (idx_t i = 0; i < fcount; i++) {
 			auto fidx = fdata.sel->get_index(i);
@@ -148,14 +213,16 @@ void Case(Vector &res_true, Vector &res_false, Vector &result, SelectionVector &
 			auto list_entry = data[fidx];
 			list_entry.offset += offset;
 			res[res_idx] = list_entry;
-			mask[res_idx] = (*fdata.nullmask)[fidx];
+			mask.Set(res_idx, fdata.validity.RowIsValid(fidx));
 		}
 
-		result.Verify(tcount + fcount);
+		result.Verify(tside, tcount);
+		result.Verify(fside, fcount);
 		break;
 	}
 	default:
-		throw NotImplementedException("Unimplemented type for case expression: %s",
-		                              TypeIdToString(result.type).c_str());
+		throw NotImplementedException("Unimplemented type for case expression: %s", result.GetType().ToString());
 	}
 }
+
+} // namespace duckdb

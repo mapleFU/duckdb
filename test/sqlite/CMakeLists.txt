@@ -1,23 +1,9 @@
+add_extension_definitions()
 
-if(${BUILD_ICU_EXTENSION})
-add_definitions(-DBUILD_ICU_EXTENSION=${BUILD_ICU_EXTENSION})
-include_directories(../../extension/icu/include)
-endif()
+add_definitions(-DDUCKDB_ROOT_DIRECTORY="${PROJECT_SOURCE_DIR}"
+                -DDUCKDB_BUILD_DIRECTORY="${PROJECT_BINARY_DIR}")
 
-if(${BUILD_PARQUET_EXTENSION})
-add_definitions(-DBUILD_PARQUET_EXTENSION=${BUILD_PARQUET_EXTENSION})
-include_directories(../../extension/parquet/include)
-endif()
-
-if(${BUILD_TILEDB_EXTENSION})
-    add_definitions(-DBUILD_TILEDB_EXTENSION=${BUILD_TILEDB_EXTENSION})
-    include_directories(../../extension/tiledb/include)
-endif()
-
-add_library_unity(test_sqlite
-                  OBJECT
-                  md5.cpp
-                  test_sqllogictest.cpp)
+add_library_unity(test_sqlite OBJECT test_sqllogictest.cpp)
 set(ALL_OBJECT_FILES
     ${ALL_OBJECT_FILES} $<TARGET_OBJECTS:test_sqlite>
     PARENT_SCOPE)

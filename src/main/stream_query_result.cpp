@@ -3,13 +3,13 @@
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/materialized_query_result.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
-StreamQueryResult::StreamQueryResult(StatementType statement_type, ClientContext &context, vector<SQLType> sql_types,
-                                     vector<TypeId> types, vector<string> names)
-    : QueryResult(QueryResultType::STREAM_RESULT, statement_type, sql_types, types, names), is_open(true),
-      context(context) {
+StreamQueryResult::StreamQueryResult(StatementType statement_type, shared_ptr<ClientContext> context,
+                                     vector<LogicalType> types, vector<string> names,
+                                     shared_ptr<PreparedStatementData> prepared)
+    : QueryResult(QueryResultType::STREAM_RESULT, statement_type, move(types), move(names)), is_open(true),
+      context(move(context)), prepared(move(prepared)) {
 }
 
 StreamQueryResult::~StreamQueryResult() {
@@ -22,18 +22,20 @@ string StreamQueryResult::ToString() {
 		result = HeaderToString();
 		result += "[[STREAM RESULT]]";
 	} else {
-		result = "Query Error: " + error + "\n";
+		result = error + "\n";
 	}
 	return result;
 }
 
-unique_ptr<DataChunk> StreamQueryResult::Fetch() {
+unique_ptr<DataChunk> StreamQueryResult::FetchRaw() {
 	if (!success || !is_open) {
-		return nullptr;
+		throw InvalidInputException(
+		    "Attempting to fetch from an unsuccessful or closed streaming query result\nError: %s", error);
 	}
-	auto chunk = context.Fetch();
-	if (!chunk || chunk->column_count() == 0 || chunk->size() == 0) {
+	auto chunk = context->Fetch();
+	if (!chunk || chunk->ColumnCount() == 0 || chunk->size() == 0) {
 		Close();
+		return nullptr;
 	}
 	return chunk;
 }
@@ -42,19 +44,26 @@ unique_ptr<MaterializedQueryResult> StreamQueryResult::Materialize() {
 	if (!success) {
 		return make_unique<MaterializedQueryResult>(error);
 	}
-	auto result = make_unique<MaterializedQueryResult>(statement_type, sql_types, types, names);
+	auto result = make_unique<MaterializedQueryResult>(statement_type, types, names);
 	while (true) {
 		auto chunk = Fetch();
 		if (!chunk || chunk->size() == 0) {
-			return result;
+			break;
 		}
 		result->collection.Append(*chunk);
 	}
+	if (!success) {
+		return make_unique<MaterializedQueryResult>(error);
+	}
+	return result;
 }
 
 void StreamQueryResult::Close() {
 	if (!is_open) {
 		return;
 	}
-	context.Cleanup();
+	is_open = false;
+	context->Cleanup();
 }
+
+} // namespace duckdb

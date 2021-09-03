@@ -30,44 +30,49 @@ class Executor {
 	friend class PipelineTask;
 
 public:
-	Executor(ClientContext &context);
+	explicit Executor(ClientContext &context);
 	~Executor();
 
 	ClientContext &context;
 
 public:
-	void Initialize(unique_ptr<PhysicalOperator> physical_plan);
+	void Initialize(PhysicalOperator *physical_plan);
 	void BuildPipelines(PhysicalOperator *op, Pipeline *parent);
 
 	void Reset();
 
-	vector<TypeId> GetTypes();
+	vector<LogicalType> GetTypes();
 
 	unique_ptr<DataChunk> FetchChunk();
 
 	//! Push a new error
-	void PushError(std::string exception);
+	void PushError(const string &exception);
+	bool GetError(string &exception);
 
 	//! Flush a thread context into the client context
 	void Flush(ThreadContext &context);
 
+	//! Returns the progress of the pipelines
+	bool GetPipelinesProgress(int &current_progress);
+
 private:
-	unique_ptr<PhysicalOperator> physical_plan;
+	PhysicalOperator *physical_plan;
 	unique_ptr<PhysicalOperatorState> physical_state;
 
 	mutex executor_lock;
 	//! The pipelines of the current query
-	vector<unique_ptr<Pipeline>> pipelines;
+	vector<shared_ptr<Pipeline>> pipelines;
 	//! The producer of this query
 	unique_ptr<ProducerToken> producer;
 	//! Exceptions that occurred during the execution of the current query
 	vector<string> exceptions;
 
 	//! The amount of completed pipelines of the query
-	std::atomic<idx_t> completed_pipelines;
+	atomic<idx_t> completed_pipelines;
 	//! The total amount of pipelines in the query
 	idx_t total_pipelines;
 
-	unordered_map<ChunkCollection *, Pipeline *> delim_join_dependencies;
+	unordered_map<PhysicalOperator *, Pipeline *> delim_join_dependencies;
+	PhysicalOperator *recursive_cte;
 };
 } // namespace duckdb

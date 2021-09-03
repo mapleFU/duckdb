@@ -10,6 +10,7 @@
 
 #include "duckdb/common/common.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/radix.hpp"
 #include "duckdb/common/types/string_type.hpp"
 
 namespace duckdb {
@@ -22,7 +23,8 @@ public:
 	unique_ptr<data_t[]> data;
 
 public:
-	template <class T> static unique_ptr<Key> CreateKey(T element, bool is_little_endian) {
+	template <class T>
+	static unique_ptr<Key> CreateKey(T element, bool is_little_endian) {
 		auto data = Key::CreateData<T>(element, is_little_endian);
 		return make_unique<Key>(move(data), sizeof(element));
 	}
@@ -39,26 +41,20 @@ public:
 	bool operator>=(const Key &k) const;
 	bool operator==(const Key &k) const;
 
-	string ToString(bool is_little_endian, TypeId type);
-
-	static uint32_t EncodeFloat(float x);
-	static uint64_t EncodeDouble(double x);
+	string ToString(bool is_little_endian, PhysicalType type);
 
 private:
-	template <class T> static unique_ptr<data_t[]> CreateData(T value, bool is_little_endian) {
-		throw NotImplementedException("Cannot create data from this type");
+	template <class T>
+	static unique_ptr<data_t[]> CreateData(T value, bool is_little_endian) {
+		auto data = unique_ptr<data_t[]>(new data_t[sizeof(value)]);
+		EncodeData<T>(data.get(), value, is_little_endian);
+		return data;
 	}
 };
 
-template <> unique_ptr<data_t[]> Key::CreateData(bool value, bool is_little_endian);
-template <> unique_ptr<data_t[]> Key::CreateData(int8_t value, bool is_little_endian);
-template <> unique_ptr<data_t[]> Key::CreateData(int16_t value, bool is_little_endian);
-template <> unique_ptr<data_t[]> Key::CreateData(int32_t value, bool is_little_endian);
-template <> unique_ptr<data_t[]> Key::CreateData(int64_t value, bool is_little_endian);
-template <> unique_ptr<data_t[]> Key::CreateData(double value, bool is_little_endian);
-template <> unique_ptr<data_t[]> Key::CreateData(float value, bool is_little_endian);
-
-template <> unique_ptr<Key> Key::CreateKey(string_t value, bool is_little_endian);
-template <> unique_ptr<Key> Key::CreateKey(const char *value, bool is_little_endian);
+template <>
+unique_ptr<Key> Key::CreateKey(string_t value, bool is_little_endian);
+template <>
+unique_ptr<Key> Key::CreateKey(const char *value, bool is_little_endian);
 
 } // namespace duckdb

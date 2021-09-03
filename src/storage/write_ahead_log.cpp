@@ -1,36 +1,67 @@
 #include "duckdb/storage/write_ahead_log.hpp"
-#include "duckdb/main/database.hpp"
+
+#include "duckdb/catalog/catalog_entry/macro_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/view_catalog_entry.hpp"
+#include "duckdb/main/database.hpp"
 #include "duckdb/parser/parsed_data/alter_table_info.hpp"
+
 #include <cstring>
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
-WriteAheadLog::WriteAheadLog(DuckDB &database) : initialized(false), database(database) {
+WriteAheadLog::WriteAheadLog(DatabaseInstance &database) : initialized(false), skip_writing(false), database(database) {
 }
 
 void WriteAheadLog::Initialize(string &path) {
-	writer = make_unique<BufferedFileWriter>(database.GetFileSystem(), path.c_str(), FileFlags::WRITE | FileFlags::FILE_CREATE | FileFlags::APPEND);
+	wal_path = path;
+	writer = make_unique<BufferedFileWriter>(database.GetFileSystem(), path.c_str(),
+	                                         FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE |
+	                                             FileFlags::FILE_FLAGS_APPEND);
 	initialized = true;
 }
 
 int64_t WriteAheadLog::GetWALSize() {
+	D_ASSERT(writer);
 	return writer->GetFileSize();
+}
+
+idx_t WriteAheadLog::GetTotalWritten() {
+	D_ASSERT(writer);
+	return writer->GetTotalWritten();
 }
 
 void WriteAheadLog::Truncate(int64_t size) {
 	writer->Truncate(size);
 }
+
+void WriteAheadLog::Delete() {
+	if (!initialized) {
+		return;
+	}
+	initialized = false;
+	writer.reset();
+
+	auto &fs = FileSystem::GetFileSystem(database);
+	fs.RemoveFile(wal_path);
+}
+
 //===--------------------------------------------------------------------===//
 // Write Entries
 //===--------------------------------------------------------------------===//
+void WriteAheadLog::WriteCheckpoint(block_id_t meta_block) {
+	writer->Write<WALType>(WALType::CHECKPOINT);
+	writer->Write<block_id_t>(meta_block);
+}
+
 //===--------------------------------------------------------------------===//
 // CREATE TABLE
 //===--------------------------------------------------------------------===//
 void WriteAheadLog::WriteCreateTable(TableCatalogEntry *entry) {
+	if (skip_writing) {
+		return;
+	}
 	writer->Write<WALType>(WALType::CREATE_TABLE);
 	entry->Serialize(*writer);
 }
@@ -39,6 +70,9 @@ void WriteAheadLog::WriteCreateTable(TableCatalogEntry *entry) {
 // DROP TABLE
 //===--------------------------------------------------------------------===//
 void WriteAheadLog::WriteDropTable(TableCatalogEntry *entry) {
+	if (skip_writing) {
+		return;
+	}
 	writer->Write<WALType>(WALType::DROP_TABLE);
 	writer->WriteString(entry->schema->name);
 	writer->WriteString(entry->name);
@@ -48,6 +82,9 @@ void WriteAheadLog::WriteDropTable(TableCatalogEntry *entry) {
 // CREATE SCHEMA
 //===--------------------------------------------------------------------===//
 void WriteAheadLog::WriteCreateSchema(SchemaCatalogEntry *entry) {
+	if (skip_writing) {
+		return;
+	}
 	writer->Write<WALType>(WALType::CREATE_SCHEMA);
 	writer->WriteString(entry->name);
 }
@@ -56,17 +93,26 @@ void WriteAheadLog::WriteCreateSchema(SchemaCatalogEntry *entry) {
 // SEQUENCES
 //===--------------------------------------------------------------------===//
 void WriteAheadLog::WriteCreateSequence(SequenceCatalogEntry *entry) {
+	if (skip_writing) {
+		return;
+	}
 	writer->Write<WALType>(WALType::CREATE_SEQUENCE);
 	entry->Serialize(*writer);
 }
 
 void WriteAheadLog::WriteDropSequence(SequenceCatalogEntry *entry) {
+	if (skip_writing) {
+		return;
+	}
 	writer->Write<WALType>(WALType::DROP_SEQUENCE);
 	writer->WriteString(entry->schema->name);
 	writer->WriteString(entry->name);
 }
 
 void WriteAheadLog::WriteSequenceValue(SequenceCatalogEntry *entry, SequenceValue val) {
+	if (skip_writing) {
+		return;
+	}
 	writer->Write<WALType>(WALType::SEQUENCE_VALUE);
 	writer->WriteString(entry->schema->name);
 	writer->WriteString(entry->name);
@@ -75,14 +121,40 @@ void WriteAheadLog::WriteSequenceValue(SequenceCatalogEntry *entry, SequenceValu
 }
 
 //===--------------------------------------------------------------------===//
+// MACRO'S
+//===--------------------------------------------------------------------===//
+void WriteAheadLog::WriteCreateMacro(MacroCatalogEntry *entry) {
+	if (skip_writing) {
+		return;
+	}
+	writer->Write<WALType>(WALType::CREATE_MACRO);
+	entry->Serialize(*writer);
+}
+
+void WriteAheadLog::WriteDropMacro(MacroCatalogEntry *entry) {
+	if (skip_writing) {
+		return;
+	}
+	writer->Write<WALType>(WALType::DROP_MACRO);
+	writer->WriteString(entry->schema->name);
+	writer->WriteString(entry->name);
+}
+
+//===--------------------------------------------------------------------===//
 // VIEWS
 //===--------------------------------------------------------------------===//
 void WriteAheadLog::WriteCreateView(ViewCatalogEntry *entry) {
+	if (skip_writing) {
+		return;
+	}
 	writer->Write<WALType>(WALType::CREATE_VIEW);
 	entry->Serialize(*writer);
 }
 
 void WriteAheadLog::WriteDropView(ViewCatalogEntry *entry) {
+	if (skip_writing) {
+		return;
+	}
 	writer->Write<WALType>(WALType::DROP_VIEW);
 	writer->WriteString(entry->schema->name);
 	writer->WriteString(entry->name);
@@ -92,6 +164,9 @@ void WriteAheadLog::WriteDropView(ViewCatalogEntry *entry) {
 // DROP SCHEMA
 //===--------------------------------------------------------------------===//
 void WriteAheadLog::WriteDropSchema(SchemaCatalogEntry *entry) {
+	if (skip_writing) {
+		return;
+	}
 	writer->Write<WALType>(WALType::DROP_SCHEMA);
 	writer->WriteString(entry->name);
 }
@@ -100,13 +175,19 @@ void WriteAheadLog::WriteDropSchema(SchemaCatalogEntry *entry) {
 // DATA
 //===--------------------------------------------------------------------===//
 void WriteAheadLog::WriteSetTable(string &schema, string &table) {
+	if (skip_writing) {
+		return;
+	}
 	writer->Write<WALType>(WALType::USE_TABLE);
 	writer->WriteString(schema);
 	writer->WriteString(table);
 }
 
 void WriteAheadLog::WriteInsert(DataChunk &chunk) {
-	assert(chunk.size() > 0);
+	if (skip_writing) {
+		return;
+	}
+	D_ASSERT(chunk.size() > 0);
 	chunk.Verify();
 
 	writer->Write<WALType>(WALType::INSERT_TUPLE);
@@ -114,20 +195,31 @@ void WriteAheadLog::WriteInsert(DataChunk &chunk) {
 }
 
 void WriteAheadLog::WriteDelete(DataChunk &chunk) {
-	assert(chunk.size() > 0);
-	assert(chunk.column_count() == 1 && chunk.data[0].type == ROW_TYPE);
+	if (skip_writing) {
+		return;
+	}
+	D_ASSERT(chunk.size() > 0);
+	D_ASSERT(chunk.ColumnCount() == 1 && chunk.data[0].GetType() == LOGICAL_ROW_TYPE);
 	chunk.Verify();
 
 	writer->Write<WALType>(WALType::DELETE_TUPLE);
 	chunk.Serialize(*writer);
 }
 
-void WriteAheadLog::WriteUpdate(DataChunk &chunk, column_t col_idx) {
-	assert(chunk.size() > 0);
+void WriteAheadLog::WriteUpdate(DataChunk &chunk, const vector<column_t> &column_indexes) {
+	if (skip_writing) {
+		return;
+	}
+	D_ASSERT(chunk.size() > 0);
+	D_ASSERT(chunk.ColumnCount() == 2);
+	D_ASSERT(chunk.data[1].GetType().id() == LOGICAL_ROW_TYPE.id());
 	chunk.Verify();
 
 	writer->Write<WALType>(WALType::UPDATE_TUPLE);
-	writer->Write<column_t>(col_idx);
+	writer->Write<idx_t>(column_indexes.size());
+	for (auto &col_idx : column_indexes) {
+		writer->Write<column_t>(col_idx);
+	}
 	chunk.Serialize(*writer);
 }
 
@@ -135,6 +227,9 @@ void WriteAheadLog::WriteUpdate(DataChunk &chunk, column_t col_idx) {
 // Write ALTER Statement
 //===--------------------------------------------------------------------===//
 void WriteAheadLog::WriteAlter(AlterInfo &info) {
+	if (skip_writing) {
+		return;
+	}
 	writer->Write<WALType>(WALType::ALTER_INFO);
 	info.Serialize(*writer);
 }
@@ -143,8 +238,13 @@ void WriteAheadLog::WriteAlter(AlterInfo &info) {
 // FLUSH
 //===--------------------------------------------------------------------===//
 void WriteAheadLog::Flush() {
+	if (skip_writing) {
+		return;
+	}
 	// write an empty entry
 	writer->Write<WALType>(WALType::WAL_FLUSH);
 	// flushes all changes made to the WAL to disk
 	writer->Sync();
 }
+
+} // namespace duckdb

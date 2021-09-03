@@ -2,70 +2,79 @@
 
 #include "duckdb/parser/expression/comparison_expression.hpp"
 
-using namespace std;
-
 namespace duckdb {
 
-template <class MJ, class L_ARG, class R_ARG> static idx_t merge_join(L_ARG &l, R_ARG &r) {
-	switch (l.type) {
-	case TypeId::BOOL:
-	case TypeId::INT8:
+template <class MJ, class L_ARG, class R_ARG>
+static idx_t MergeJoinSwitch(L_ARG &l, R_ARG &r) {
+	switch (l.type.InternalType()) {
+	case PhysicalType::BOOL:
+	case PhysicalType::INT8:
 		return MJ::template Operation<int8_t>(l, r);
-	case TypeId::INT16:
+	case PhysicalType::INT16:
 		return MJ::template Operation<int16_t>(l, r);
-	case TypeId::INT32:
+	case PhysicalType::INT32:
 		return MJ::template Operation<int32_t>(l, r);
-	case TypeId::INT64:
+	case PhysicalType::INT64:
 		return MJ::template Operation<int64_t>(l, r);
-	case TypeId::FLOAT:
+	case PhysicalType::UINT8:
+		return MJ::template Operation<uint8_t>(l, r);
+	case PhysicalType::UINT16:
+		return MJ::template Operation<uint16_t>(l, r);
+	case PhysicalType::UINT32:
+		return MJ::template Operation<uint32_t>(l, r);
+	case PhysicalType::UINT64:
+		return MJ::template Operation<uint64_t>(l, r);
+	case PhysicalType::INT128:
+		return MJ::template Operation<hugeint_t>(l, r);
+	case PhysicalType::FLOAT:
 		return MJ::template Operation<float>(l, r);
-	case TypeId::DOUBLE:
+	case PhysicalType::DOUBLE:
 		return MJ::template Operation<double>(l, r);
-	case TypeId::INTERVAL:
+	case PhysicalType::INTERVAL:
 		return MJ::template Operation<interval_t>(l, r);
-	case TypeId::VARCHAR:
+	case PhysicalType::VARCHAR:
 		return MJ::template Operation<string_t>(l, r);
 	default:
-		throw NotImplementedException("Type not implemented for merge join!");
+		throw InternalException("Type not implemented for merge join!");
 	}
 }
 
 template <class T, class L_ARG, class R_ARG>
-static idx_t perform_merge_join(L_ARG &l, R_ARG &r, ExpressionType comparison_type) {
+static idx_t MergeJoinComparisonSwitch(L_ARG &l, R_ARG &r, ExpressionType comparison_type) {
 	switch (comparison_type) {
 	case ExpressionType::COMPARE_LESSTHAN:
-		return merge_join<typename T::LessThan, L_ARG, R_ARG>(l, r);
+		return MergeJoinSwitch<typename T::LessThan, L_ARG, R_ARG>(l, r);
 	case ExpressionType::COMPARE_LESSTHANOREQUALTO:
-		return merge_join<typename T::LessThanEquals, L_ARG, R_ARG>(l, r);
+		return MergeJoinSwitch<typename T::LessThanEquals, L_ARG, R_ARG>(l, r);
 	case ExpressionType::COMPARE_GREATERTHAN:
-		return merge_join<typename T::GreaterThan, L_ARG, R_ARG>(l, r);
+		return MergeJoinSwitch<typename T::GreaterThan, L_ARG, R_ARG>(l, r);
 	case ExpressionType::COMPARE_GREATERTHANOREQUALTO:
-		return merge_join<typename T::GreaterThanEquals, L_ARG, R_ARG>(l, r);
+		return MergeJoinSwitch<typename T::GreaterThanEquals, L_ARG, R_ARG>(l, r);
 	default:
-		throw NotImplementedException("Unimplemented comparison type for merge join!");
+		throw InternalException("Unimplemented comparison type for merge join!");
 	}
 }
 
 idx_t MergeJoinComplex::Perform(MergeInfo &l, MergeInfo &r, ExpressionType comparison_type) {
-	assert(l.info_type == MergeInfoType::SCALAR_MERGE_INFO && r.info_type == MergeInfoType::SCALAR_MERGE_INFO);
+	D_ASSERT(l.info_type == MergeInfoType::SCALAR_MERGE_INFO && r.info_type == MergeInfoType::SCALAR_MERGE_INFO);
 	auto &left = (ScalarMergeInfo &)l;
 	auto &right = (ScalarMergeInfo &)r;
-	assert(left.type == right.type);
+	D_ASSERT(left.type == right.type);
 	if (left.order.count == 0 || right.order.count == 0) {
 		return 0;
 	}
-	return perform_merge_join<MergeJoinComplex, ScalarMergeInfo, ScalarMergeInfo>(left, right, comparison_type);
+	return MergeJoinComparisonSwitch<MergeJoinComplex, ScalarMergeInfo, ScalarMergeInfo>(left, right, comparison_type);
 }
 
 idx_t MergeJoinSimple::Perform(MergeInfo &l, MergeInfo &r, ExpressionType comparison_type) {
-	assert(l.info_type == MergeInfoType::SCALAR_MERGE_INFO && r.info_type == MergeInfoType::CHUNK_MERGE_INFO);
+	D_ASSERT(l.info_type == MergeInfoType::SCALAR_MERGE_INFO && r.info_type == MergeInfoType::CHUNK_MERGE_INFO);
 	auto &left = (ScalarMergeInfo &)l;
 	auto &right = (ChunkMergeInfo &)r;
-	assert(left.type == right.type);
-	if (left.order.count == 0 || right.data_chunks.count == 0) {
+	D_ASSERT(left.type == right.type);
+	if (left.order.count == 0 || right.data_chunks.Count() == 0) {
 		return 0;
 	}
-	return perform_merge_join<MergeJoinSimple, ScalarMergeInfo, ChunkMergeInfo>(left, right, comparison_type);
+	return MergeJoinComparisonSwitch<MergeJoinSimple, ScalarMergeInfo, ChunkMergeInfo>(left, right, comparison_type);
 }
 
-}
+} // namespace duckdb

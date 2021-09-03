@@ -1,6 +1,7 @@
 #include "duckdb/planner/expression_binder.hpp"
 
 #include "duckdb/parser/expression/columnref_expression.hpp"
+#include "duckdb/parser/expression/positional_reference_expression.hpp"
 #include "duckdb/parser/expression/subquery_expression.hpp"
 #include "duckdb/parser/parsed_expression_iterator.hpp"
 #include "duckdb/planner/binder.hpp"
@@ -10,8 +11,7 @@
 #include "duckdb/planner/expression/bound_subquery_expression.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
 ExpressionBinder::ExpressionBinder(Binder &binder, ClientContext &context, bool replace_binder)
     : binder(binder), context(context), stored_binder(nullptr) {
@@ -33,30 +33,38 @@ ExpressionBinder::~ExpressionBinder() {
 	}
 }
 
-BindResult ExpressionBinder::BindExpression(ParsedExpression &expr, idx_t depth, bool root_expression) {
-	switch (expr.expression_class) {
+BindResult ExpressionBinder::BindExpression(unique_ptr<ParsedExpression> *expr, idx_t depth, bool root_expression) {
+	auto &expr_ref = **expr;
+	switch (expr_ref.expression_class) {
+	case ExpressionClass::BETWEEN:
+		return BindExpression((BetweenExpression &)expr_ref, depth);
 	case ExpressionClass::CASE:
-		return BindExpression((CaseExpression &)expr, depth);
+		return BindExpression((CaseExpression &)expr_ref, depth);
 	case ExpressionClass::CAST:
-		return BindExpression((CastExpression &)expr, depth);
+		return BindExpression((CastExpression &)expr_ref, depth);
 	case ExpressionClass::COLLATE:
-		return BindExpression((CollateExpression &)expr, depth);
+		return BindExpression((CollateExpression &)expr_ref, depth);
 	case ExpressionClass::COLUMN_REF:
-		return BindExpression((ColumnRefExpression &)expr, depth);
+		return BindExpression((ColumnRefExpression &)expr_ref, depth);
 	case ExpressionClass::COMPARISON:
-		return BindExpression((ComparisonExpression &)expr, depth);
+		return BindExpression((ComparisonExpression &)expr_ref, depth);
 	case ExpressionClass::CONJUNCTION:
-		return BindExpression((ConjunctionExpression &)expr, depth);
+		return BindExpression((ConjunctionExpression &)expr_ref, depth);
 	case ExpressionClass::CONSTANT:
-		return BindExpression((ConstantExpression &)expr, depth);
+		return BindExpression((ConstantExpression &)expr_ref, depth);
 	case ExpressionClass::FUNCTION:
-		return BindExpression((FunctionExpression &)expr, depth);
+		// binding function expression has extra parameter needed for macro's
+		return BindExpression((FunctionExpression &)expr_ref, depth, expr);
+	case ExpressionClass::LAMBDA:
+		return BindExpression((LambdaExpression &)expr_ref, depth);
 	case ExpressionClass::OPERATOR:
-		return BindExpression((OperatorExpression &)expr, depth);
+		return BindExpression((OperatorExpression &)expr_ref, depth);
 	case ExpressionClass::SUBQUERY:
-		return BindExpression((SubqueryExpression &)expr, depth);
+		return BindExpression((SubqueryExpression &)expr_ref, depth);
 	case ExpressionClass::PARAMETER:
-		return BindExpression((ParameterExpression &)expr, depth);
+		return BindExpression((ParameterExpression &)expr_ref, depth);
+	case ExpressionClass::POSITIONAL_REFERENCE:
+		return BindExpression((PositionalReferenceExpression &)expr_ref, depth);
 	default:
 		throw NotImplementedException("Unimplemented expression class");
 	}
@@ -70,7 +78,7 @@ bool ExpressionBinder::BindCorrelatedColumns(unique_ptr<ParsedExpression> &expr)
 	active_binders.pop_back();
 	idx_t depth = 1;
 	bool success = false;
-	while (active_binders.size() > 0) {
+	while (!active_binders.empty()) {
 		auto &next_binder = active_binders.back();
 		ExpressionBinder::BindTableNames(next_binder->binder, *expr);
 		auto bind_result = next_binder->Bind(&expr, depth);
@@ -86,7 +94,7 @@ bool ExpressionBinder::BindCorrelatedColumns(unique_ptr<ParsedExpression> &expr)
 }
 
 void ExpressionBinder::BindChild(unique_ptr<ParsedExpression> &expr, idx_t depth, string &error) {
-	if (expr.get()) {
+	if (expr) {
 		string bind_error = Bind(&expr, depth);
 		if (error.empty()) {
 			error = bind_error;
@@ -105,7 +113,72 @@ void ExpressionBinder::ExtractCorrelatedExpressions(Binder &binder, Expression &
 	                                      [&](Expression &child) { ExtractCorrelatedExpressions(binder, child); });
 }
 
-unique_ptr<Expression> ExpressionBinder::Bind(unique_ptr<ParsedExpression> &expr, SQLType *result_type,
+bool ExpressionBinder::ContainsType(const LogicalType &type, LogicalTypeId target) {
+	if (type.id() == target) {
+		return true;
+	}
+	switch (type.id()) {
+	case LogicalTypeId::STRUCT:
+	case LogicalTypeId::MAP: {
+		auto child_count = StructType::GetChildCount(type);
+		for (idx_t i = 0; i < child_count; i++) {
+			if (ContainsType(StructType::GetChildType(type, i), target)) {
+				return true;
+			}
+		}
+		return false;
+	}
+	case LogicalTypeId::LIST:
+		return ContainsType(ListType::GetChildType(type), target);
+	default:
+		return false;
+	}
+}
+
+LogicalType ExpressionBinder::ExchangeType(const LogicalType &type, LogicalTypeId target, LogicalType new_type) {
+	if (type.id() == target) {
+		return new_type;
+	}
+	switch (type.id()) {
+	case LogicalTypeId::STRUCT:
+	case LogicalTypeId::MAP: {
+		// we make a copy of the child types of the struct here
+		auto child_types = StructType::GetChildTypes(type);
+		for (auto &child_type : child_types) {
+			child_type.second = ExchangeType(child_type.second, target, new_type);
+		}
+		return type.id() == LogicalTypeId::MAP ? LogicalType::MAP(move(child_types))
+		                                       : LogicalType::STRUCT(move(child_types));
+	}
+	case LogicalTypeId::LIST:
+		return LogicalType::LIST(ExchangeType(ListType::GetChildType(type), target, new_type));
+	default:
+		return type;
+	}
+}
+
+bool ExpressionBinder::ContainsNullType(const LogicalType &type) {
+	return ContainsType(type, LogicalTypeId::SQLNULL);
+}
+
+LogicalType ExpressionBinder::ExchangeNullType(const LogicalType &type) {
+	return ExchangeType(type, LogicalTypeId::SQLNULL, LogicalType::INTEGER);
+}
+
+void ExpressionBinder::ResolveParameterType(LogicalType &type) {
+	if (type.id() == LogicalTypeId::UNKNOWN) {
+		type = LogicalType::VARCHAR;
+	}
+}
+
+void ExpressionBinder::ResolveParameterType(unique_ptr<Expression> &expr) {
+	if (ContainsType(expr->return_type, LogicalTypeId::UNKNOWN)) {
+		auto result_type = ExchangeType(expr->return_type, LogicalTypeId::UNKNOWN, LogicalType::VARCHAR);
+		expr = BoundCastExpression::AddCastToType(move(expr), result_type);
+	}
+}
+
+unique_ptr<Expression> ExpressionBinder::Bind(unique_ptr<ParsedExpression> &expr, LogicalType *result_type,
                                               bool root_expression) {
 	// bind the main expression
 	auto error_msg = Bind(&expr, 0, root_expression);
@@ -118,22 +191,27 @@ unique_ptr<Expression> ExpressionBinder::Bind(unique_ptr<ParsedExpression> &expr
 		auto bound_expr = (BoundExpression *)expr.get();
 		ExtractCorrelatedExpressions(binder, *bound_expr->expr);
 	}
-	assert(expr->expression_class == ExpressionClass::BOUND_EXPRESSION);
+	D_ASSERT(expr->expression_class == ExpressionClass::BOUND_EXPRESSION);
 	auto bound_expr = (BoundExpression *)expr.get();
 	unique_ptr<Expression> result = move(bound_expr->expr);
-	if (target_type.id != SQLTypeId::INVALID) {
+	if (target_type.id() != LogicalTypeId::INVALID) {
 		// the binder has a specific target type: add a cast to that type
-		result = BoundCastExpression::AddCastToType(move(result), bound_expr->sql_type, target_type);
+		result = BoundCastExpression::AddCastToType(move(result), target_type);
 	} else {
-		if (bound_expr->sql_type.id == SQLTypeId::SQLNULL) {
+		if (!binder.can_contain_nulls) {
 			// SQL NULL type is only used internally in the binder
 			// cast to INTEGER if we encounter it outside of the binder
-			bound_expr->sql_type = SQLType::INTEGER;
-			result = BoundCastExpression::AddCastToType(move(result), bound_expr->sql_type, bound_expr->sql_type);
+			if (ContainsNullType(result->return_type)) {
+				auto result_type = ExchangeNullType(result->return_type);
+				result = BoundCastExpression::AddCastToType(move(result), result_type);
+			}
 		}
+		// check if we failed to convert any parameters
+		// if we did, we push a cast
+		ExpressionBinder::ResolveParameterType(result);
 	}
 	if (result_type) {
-		*result_type = bound_expr->sql_type;
+		*result_type = result->return_type;
 	}
 	return result;
 }
@@ -147,14 +225,14 @@ string ExpressionBinder::Bind(unique_ptr<ParsedExpression> *expr, idx_t depth, b
 		return string();
 	}
 	// bind the expression
-	BindResult result = BindExpression(**expr, depth, root_expression);
+	BindResult result = BindExpression(expr, depth, root_expression);
 	if (result.HasError()) {
 		return result.error;
 	} else {
 		// successfully bound: replace the node with a BoundExpression
-		*expr = make_unique<BoundExpression>(move(result.expression), move(*expr), result.sql_type);
+		*expr = make_unique<BoundExpression>(move(result.expression));
 		auto be = (BoundExpression *)expr->get();
-		assert(be);
+		D_ASSERT(be);
 		be->alias = alias;
 		if (!alias.empty()) {
 			be->expr->alias = alias;
@@ -163,14 +241,33 @@ string ExpressionBinder::Bind(unique_ptr<ParsedExpression> *expr, idx_t depth, b
 	}
 }
 
-void ExpressionBinder::BindTableNames(Binder &binder, ParsedExpression &expr) {
+void ExpressionBinder::BindTableNames(Binder &binder, ParsedExpression &expr, unordered_map<string, idx_t> *alias_map) {
 	if (expr.type == ExpressionType::COLUMN_REF) {
 		auto &colref = (ColumnRefExpression &)expr;
 		if (colref.table_name.empty()) {
 			// no table name: find a binding that contains this
-			colref.table_name = binder.bind_context.GetMatchingBinding(colref.column_name);
+			if (binder.macro_binding != nullptr && binder.macro_binding->HasMatchingBinding(colref.column_name)) {
+				// macro parameters get priority
+				colref.table_name = binder.macro_binding->alias;
+			} else if (alias_map && alias_map->find(colref.column_name) != alias_map->end()) {
+				// alias: leave unqualified
+			} else {
+				colref.table_name = binder.bind_context.GetMatchingBinding(colref.column_name);
+			}
+		}
+		binder.bind_context.BindColumn(colref, 0);
+	} else if (expr.type == ExpressionType::POSITIONAL_REFERENCE) {
+		auto &ref = (PositionalReferenceExpression &)expr;
+		if (ref.alias.empty()) {
+			string table_name, column_name;
+			auto error = binder.bind_context.BindColumn(ref, table_name, column_name);
+			if (error.empty()) {
+				ref.alias = column_name;
+			}
 		}
 	}
 	ParsedExpressionIterator::EnumerateChildren(
-	    expr, [&](const ParsedExpression &child) { BindTableNames(binder, (ParsedExpression &)child); });
+	    expr, [&](const ParsedExpression &child) { BindTableNames(binder, (ParsedExpression &)child, alias_map); });
 }
+
+} // namespace duckdb

@@ -1,32 +1,27 @@
-#include "duckdb/parser/statement/alter_table_statement.hpp"
+#include "duckdb/parser/statement/alter_statement.hpp"
 #include "duckdb/parser/transformer.hpp"
-#include "duckdb/parser/tableref/basetableref.hpp"
 #include "duckdb/parser/expression/cast_expression.hpp"
 #include "duckdb/parser/expression/columnref_expression.hpp"
 #include "duckdb/parser/constraint.hpp"
 
-using namespace std;
-
 namespace duckdb {
 
-unique_ptr<AlterTableStatement> Transformer::TransformAlter(PGNode *node) {
-	auto stmt = reinterpret_cast<PGAlterTableStmt *>(node);
-	assert(stmt);
-	assert(stmt->relation);
+unique_ptr<AlterStatement> Transformer::TransformAlter(duckdb_libpgquery::PGNode *node) {
+	auto stmt = reinterpret_cast<duckdb_libpgquery::PGAlterTableStmt *>(node);
+	D_ASSERT(stmt);
+	D_ASSERT(stmt->relation);
 
-	auto result = make_unique<AlterTableStatement>();
+	auto result = make_unique<AlterStatement>();
 
-	auto table = TransformRangeVar(stmt->relation);
-	assert(table->type == TableReferenceType::BASE_TABLE);
+	auto qname = TransformQualifiedName(stmt->relation);
 
-	auto &basetable = (BaseTableRef &)*table;
 	// first we check the type of ALTER
-	for (auto c = stmt->cmds->head; c != NULL; c = c->next) {
-		auto command = reinterpret_cast<PGAlterTableCmd *>(lfirst(c));
+	for (auto c = stmt->cmds->head; c != nullptr; c = c->next) {
+		auto command = reinterpret_cast<duckdb_libpgquery::PGAlterTableCmd *>(lfirst(c));
 		// TODO: Include more options for command->subtype
 		switch (command->subtype) {
-		case PG_AT_AddColumn: {
-			auto cdef = (PGColumnDef *)command->def;
+		case duckdb_libpgquery::PG_AT_AddColumn: {
+			auto cdef = (duckdb_libpgquery::PGColumnDef *)command->def;
 			auto centry = TransformColumnDefinition(cdef);
 			if (cdef->constraints) {
 				for (auto constr = cdef->constraints->head; constr != nullptr; constr = constr->next) {
@@ -36,38 +31,35 @@ unique_ptr<AlterTableStatement> Transformer::TransformAlter(PGNode *node) {
 					}
 				}
 			}
-			result->info = make_unique<AddColumnInfo>(basetable.schema_name, basetable.table_name, move(centry));
+			result->info = make_unique<AddColumnInfo>(qname.schema, qname.name, move(centry));
 			break;
 		}
-		case PG_AT_DropColumn: {
-			result->info = make_unique<RemoveColumnInfo>(basetable.schema_name, basetable.table_name, command->name,
-			                                             command->missing_ok);
+		case duckdb_libpgquery::PG_AT_DropColumn: {
+			result->info = make_unique<RemoveColumnInfo>(qname.schema, qname.name, command->name, command->missing_ok);
 			break;
 		}
-		case PG_AT_ColumnDefault: {
-			auto expr = TransformExpression(command->def);
-			result->info =
-			    make_unique<SetDefaultInfo>(basetable.schema_name, basetable.table_name, command->name, move(expr));
+		case duckdb_libpgquery::PG_AT_ColumnDefault: {
+			auto expr = TransformExpression(command->def, 0);
+			result->info = make_unique<SetDefaultInfo>(qname.schema, qname.name, command->name, move(expr));
 			break;
 		}
-		case PG_AT_AlterColumnType: {
-			auto cdef = (PGColumnDef *)command->def;
-			SQLType target_type = TransformTypeName(cdef->typeName);
-			target_type.collation = TransformCollation(cdef->collClause);
+		case duckdb_libpgquery::PG_AT_AlterColumnType: {
+			auto cdef = (duckdb_libpgquery::PGColumnDef *)command->def;
+			auto column_definition = TransformColumnDefinition(cdef);
 
 			unique_ptr<ParsedExpression> expr;
 			if (cdef->raw_default) {
-				expr = TransformExpression(cdef->raw_default);
+				expr = TransformExpression(cdef->raw_default, 0);
 			} else {
 				auto colref = make_unique<ColumnRefExpression>(command->name);
-				expr = make_unique<CastExpression>(target_type, move(colref));
+				expr = make_unique<CastExpression>(column_definition.type, move(colref));
 			}
-			result->info = make_unique<ChangeColumnTypeInfo>(basetable.schema_name, basetable.table_name, command->name,
-			                                                 target_type, move(expr));
+			result->info = make_unique<ChangeColumnTypeInfo>(qname.schema, qname.name, command->name,
+			                                                 column_definition.type, move(expr));
 			break;
 		}
-		case PG_AT_DropConstraint:
-		case PG_AT_DropNotNull:
+		case duckdb_libpgquery::PG_AT_DropConstraint:
+		case duckdb_libpgquery::PG_AT_DropNotNull:
 		default:
 			throw NotImplementedException("ALTER TABLE option not supported yet!");
 		}

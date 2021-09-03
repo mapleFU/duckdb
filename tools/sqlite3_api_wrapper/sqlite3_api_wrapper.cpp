@@ -1,25 +1,37 @@
 #include "sqlite3.h"
+#include "udf_struct_sqlite3.h"
+#include "sqlite3_udf_wrapper.hpp"
+
+#include "duckdb.hpp"
+#include "duckdb/parser/parser.hpp"
+#include "duckdb/main/client_context.hpp"
+#include "duckdb/common/types.hpp"
+#include "duckdb/common/operator/cast_operators.hpp"
+
+#include "utf8proc_wrapper.hpp"
 
 #include <ctype.h>
-#include <duckdb.hpp>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <string>
 #include <chrono>
+#include <cassert>
+#include <climits>
+
+#include "extension_helper.hpp"
 
 using namespace duckdb;
 using namespace std;
-
-#define SOURCE_ID DUCKDB_SOURCE_ID
-#define LIB_VERSION "DuckDB"
 
 static char *sqlite3_strdup(const char *str);
 
 struct sqlite3_string_buffer {
 	//! String data
 	unique_ptr<char[]> data;
+	//! String length
+	int data_len;
 };
 
 struct sqlite3_stmt {
@@ -43,12 +55,6 @@ struct sqlite3_stmt {
 	unique_ptr<sqlite3_string_buffer[]> current_text;
 };
 
-struct sqlite3 {
-	unique_ptr<DuckDB> db;
-	unique_ptr<Connection> con;
-	string last_error;
-};
-
 void sqlite3_randomness(int N, void *pBuf) {
 	static bool init = false;
 	if (!init) {
@@ -68,51 +74,39 @@ int sqlite3_open(const char *filename, /* Database filename (UTF-8) */
 	return sqlite3_open_v2(filename, ppDb, 0, NULL);
 }
 
-#ifdef BUILD_ICU_EXTENSION
-#include "icu-extension.hpp"
-#endif
-
-#ifdef BUILD_PARQUET_EXTENSION
-#include "parquet-extension.hpp"
-#endif
-
 int sqlite3_open_v2(const char *filename, /* Database filename (UTF-8) */
                     sqlite3 **ppDb,       /* OUT: SQLite db handle */
                     int flags,            /* Flags */
                     const char *zVfs      /* Name of VFS module to use */
 ) {
 	if (filename && strcmp(filename, ":memory:") == 0) {
-			filename = NULL;
+		filename = NULL;
+	}
+	*ppDb = nullptr;
+	if (zVfs) { /* unsupported so if set we complain */
+		return SQLITE_ERROR;
+	}
+	sqlite3 *pDb = nullptr;
+	try {
+		pDb = new sqlite3();
+		DBConfig config;
+		config.access_mode = AccessMode::AUTOMATIC;
+		if (flags & SQLITE_OPEN_READONLY) {
+			config.access_mode = AccessMode::READ_ONLY;
 		}
-		*ppDb = nullptr;
-		if (zVfs) { /* unsupported so if set we complain */
-			return SQLITE_ERROR;
-		}
-		sqlite3 *pDb = nullptr;
-		try {
-			pDb = new sqlite3();
-			DBConfig config;
-			config.access_mode = AccessMode::AUTOMATIC;
-			if (flags & SQLITE_OPEN_READONLY) {
-				config.access_mode = AccessMode::READ_ONLY;
-			}
-			pDb->db = make_unique<DuckDB>(filename, &config);
-			pDb->con = make_unique<Connection>(*pDb->db);
+		pDb->db = make_unique<DuckDB>(filename, &config);
+		pDb->con = make_unique<Connection>(*pDb->db);
 
-#ifdef BUILD_ICU_EXTENSION
-			pDb->db->LoadExtension<ICUExtension>();
-#endif
-#ifdef BUILD_PARQUET_EXTENSION
-			pDb->db->LoadExtension<ParquetExtension>();
-#endif
-		} catch (std::exception &ex) {
-			if (pDb) {
-				pDb->last_error = ex.what();
-			}
-			return SQLITE_ERROR;
+		ExtensionHelper::LoadAllExtensions(*pDb->db);
+	} catch (std::exception &ex) {
+		if (pDb) {
+			pDb->last_error = ex.what();
+			pDb->errCode = SQLITE_ERROR;
 		}
-		*ppDb = pDb;
-		return SQLITE_OK;
+		return SQLITE_ERROR;
+	}
+	*ppDb = pDb;
+	return SQLITE_OK;
 }
 
 int sqlite3_close(sqlite3 *db) {
@@ -143,23 +137,34 @@ int sqlite3_prepare_v2(sqlite3 *db,           /* Database handle */
 	if (pzTail) {
 		*pzTail = zSql + query.size();
 	}
-
 	try {
-		// extract the statements from the SQL query
-		auto statements = db->con->ExtractStatements(query);
-		if (statements.size() == 0) {
-			// no statements to prepare!
+		Parser parser;
+		parser.ParseQuery(query);
+		if (parser.statements.size() == 0) {
 			return SQLITE_OK;
 		}
+		// extract the remainder
+		idx_t next_location = parser.statements[0]->stmt_location + parser.statements[0]->stmt_length;
+		bool set_remainder = next_location < query.size();
 
 		// extract the first statement
-		auto statement = statements[0].get();
-		// extract the remainder
-		bool set_remainder = statement->stmt_location + statement->stmt_length < query.size();
-		query = query.substr(statement->stmt_location, statement->stmt_length);
+		vector<unique_ptr<SQLStatement>> statements;
+		statements.push_back(move(parser.statements[0]));
+
+		db->con->context->HandlePragmaStatements(statements);
+
+		// if there are multiple statements here, we are dealing with an import database statement
+		// we directly execute all statements besides the final one
+		for (idx_t i = 0; i + 1 < statements.size(); i++) {
+			auto res = db->con->Query(move(statements[i]));
+			if (!res->success) {
+				db->last_error = res->error;
+				return SQLITE_ERROR;
+			}
+		}
 
 		// now prepare the query
-		auto prepared = db->con->Prepare(query);
+		auto prepared = db->con->Prepare(move(statements.back()));
 		if (!prepared->success) {
 			// failed to prepare: set the error message
 			db->last_error = prepared->error;
@@ -179,7 +184,7 @@ int sqlite3_prepare_v2(sqlite3 *db,           /* Database handle */
 
 		// extract the remainder of the query and assign it to the pzTail
 		if (pzTail && set_remainder) {
-			*pzTail = zSql + query.size() + 1;
+			*pzTail = zSql + next_location + 1;
 		}
 
 		*ppStmt = stmt.release();
@@ -196,6 +201,7 @@ bool sqlite3_display_result(StatementType type) {
 	case StatementType::EXPLAIN_STATEMENT:
 	case StatementType::PRAGMA_STATEMENT:
 	case StatementType::SELECT_STATEMENT:
+	case StatementType::SHOW_STATEMENT:
 		return true;
 	default:
 		return false;
@@ -214,7 +220,7 @@ int sqlite3_step(sqlite3_stmt *pStmt) {
 	pStmt->current_text = nullptr;
 	if (!pStmt->result) {
 		// no result yet! call Execute()
-		pStmt->result = pStmt->prepared->Execute(pStmt->bound_values);
+		pStmt->result = pStmt->prepared->Execute(pStmt->bound_values, true);
 		if (!pStmt->result->success) {
 			// error in execute: clear prepared statement
 			pStmt->db->last_error = pStmt->result->error;
@@ -222,21 +228,38 @@ int sqlite3_step(sqlite3_stmt *pStmt) {
 			return SQLITE_ERROR;
 		}
 		// fetch a chunk
-		pStmt->current_chunk = pStmt->result->Fetch();
+		if (!pStmt->result->TryFetch(pStmt->current_chunk, pStmt->db->last_error)) {
+			pStmt->prepared = nullptr;
+			return SQLITE_ERROR;
+		}
+
 		pStmt->current_row = -1;
-		if (!sqlite3_display_result(pStmt->prepared->type)) {
+
+		auto statement_type = pStmt->prepared->GetStatementType();
+		if (StatementTypeReturnChanges(statement_type) && pStmt->current_chunk->size() > 0) {
+			// update total changes
+			auto row_changes = pStmt->current_chunk->GetValue(0, 0);
+			if (!row_changes.is_null && row_changes.TryCastAs(LogicalType::BIGINT)) {
+				pStmt->db->last_changes = row_changes.GetValue<int64_t>();
+				pStmt->db->total_changes += row_changes.GetValue<int64_t>();
+			}
+		}
+		if (!sqlite3_display_result(statement_type)) {
 			// only SELECT statements return results
 			sqlite3_reset(pStmt);
 		}
 	}
-	if (!pStmt->current_chunk) {
+	if (!pStmt->current_chunk || pStmt->current_chunk->size() == 0) {
 		return SQLITE_DONE;
 	}
 	pStmt->current_row++;
 	if (pStmt->current_row >= (int32_t)pStmt->current_chunk->size()) {
 		// have to fetch again!
 		pStmt->current_row = 0;
-		pStmt->current_chunk = pStmt->result->Fetch();
+		if (!pStmt->result->TryFetch(pStmt->current_chunk, pStmt->db->last_error)) {
+			pStmt->prepared = nullptr;
+			return SQLITE_ERROR;
+		}
 		if (!pStmt->current_chunk || pStmt->current_chunk->size() == 0) {
 			sqlite3_reset(pStmt);
 			return SQLITE_DONE;
@@ -358,10 +381,10 @@ const char *sqlite3_sql(sqlite3_stmt *pStmt) {
 }
 
 int sqlite3_column_count(sqlite3_stmt *pStmt) {
-	if (!pStmt) {
+	if (!pStmt || !pStmt->prepared) {
 		return 0;
 	}
-	return (int)pStmt->prepared->types.size();
+	return (int)pStmt->prepared->ColumnCount();
 }
 
 ////////////////////////////
@@ -374,52 +397,57 @@ int sqlite3_column_type(sqlite3_stmt *pStmt, int iCol) {
 	if (FlatVector::IsNull(pStmt->current_chunk->data[iCol], pStmt->current_row)) {
 		return SQLITE_NULL;
 	}
-	auto column_type = pStmt->result->sql_types[iCol];
-	switch (column_type.id) {
-	case SQLTypeId::BOOLEAN:
-	case SQLTypeId::TINYINT:
-	case SQLTypeId::SMALLINT:
-	case SQLTypeId::INTEGER:
-	case SQLTypeId::BIGINT: /* TODO: Maybe blob? */
+	auto column_type = pStmt->result->types[iCol];
+	switch (column_type.id()) {
+	case LogicalTypeId::BOOLEAN:
+	case LogicalTypeId::TINYINT:
+	case LogicalTypeId::SMALLINT:
+	case LogicalTypeId::INTEGER:
+	case LogicalTypeId::BIGINT: /* TODO: Maybe blob? */
 		return SQLITE_INTEGER;
-	case SQLTypeId::FLOAT:
-	case SQLTypeId::DOUBLE:
-	case SQLTypeId::DECIMAL:
+	case LogicalTypeId::FLOAT:
+	case LogicalTypeId::DOUBLE:
+	case LogicalTypeId::DECIMAL:
 		return SQLITE_FLOAT;
-	case SQLTypeId::DATE:
-	case SQLTypeId::TIME:
-	case SQLTypeId::TIMESTAMP:
-	case SQLTypeId::VARCHAR:
-	case SQLTypeId::LIST:
-	case SQLTypeId::STRUCT:
+	case LogicalTypeId::DATE:
+	case LogicalTypeId::TIME:
+	case LogicalTypeId::TIMESTAMP:
+	case LogicalTypeId::TIMESTAMP_SEC:
+	case LogicalTypeId::TIMESTAMP_MS:
+	case LogicalTypeId::TIMESTAMP_NS:
+	case LogicalTypeId::VARCHAR:
+	case LogicalTypeId::LIST:
+	case LogicalTypeId::STRUCT:
+	case LogicalTypeId::MAP:
+		return SQLITE_TEXT;
+	case LogicalTypeId::BLOB:
 		return SQLITE_BLOB;
 	default:
-		return 0;
+		// TODO(wangfenjin): agg function don't have type?
+		return SQLITE_TEXT;
 	}
 	return 0;
 }
 
 const char *sqlite3_column_name(sqlite3_stmt *pStmt, int N) {
-	if (!pStmt) {
+	if (!pStmt || !pStmt->prepared) {
 		return nullptr;
 	}
-	return pStmt->prepared->names[N].c_str();
+	return pStmt->prepared->GetNames()[N].c_str();
 }
 
-static bool sqlite3_column_has_value(sqlite3_stmt *pStmt, int iCol, SQLType target_type, Value &val) {
+static bool sqlite3_column_has_value(sqlite3_stmt *pStmt, int iCol, LogicalType target_type, Value &val) {
 	if (!pStmt || !pStmt->result || !pStmt->current_chunk) {
 		return false;
 	}
-	if (iCol < 0 || iCol >= (int)pStmt->result->sql_types.size()) {
+	if (iCol < 0 || iCol >= (int)pStmt->result->types.size()) {
 		return false;
 	}
 	if (FlatVector::IsNull(pStmt->current_chunk->data[iCol], pStmt->current_row)) {
 		return false;
 	}
 	try {
-		val = pStmt->current_chunk->data[iCol]
-		          .GetValue(pStmt->current_row)
-		          .CastAs(pStmt->result->sql_types[iCol], target_type);
+		val = pStmt->current_chunk->data[iCol].GetValue(pStmt->current_row).CastAs(target_type);
 	} catch (...) {
 		return false;
 	}
@@ -428,7 +456,7 @@ static bool sqlite3_column_has_value(sqlite3_stmt *pStmt, int iCol, SQLType targ
 
 double sqlite3_column_double(sqlite3_stmt *stmt, int iCol) {
 	Value val;
-	if (!sqlite3_column_has_value(stmt, iCol, SQLTypeId::DOUBLE, val)) {
+	if (!sqlite3_column_has_value(stmt, iCol, LogicalType::DOUBLE, val)) {
 		return 0;
 	}
 	return val.value_.double_;
@@ -436,7 +464,7 @@ double sqlite3_column_double(sqlite3_stmt *stmt, int iCol) {
 
 int sqlite3_column_int(sqlite3_stmt *stmt, int iCol) {
 	Value val;
-	if (!sqlite3_column_has_value(stmt, iCol, SQLTypeId::INTEGER, val)) {
+	if (!sqlite3_column_has_value(stmt, iCol, LogicalType::INTEGER, val)) {
 		return 0;
 	}
 	return val.value_.integer;
@@ -444,7 +472,7 @@ int sqlite3_column_int(sqlite3_stmt *stmt, int iCol) {
 
 sqlite3_int64 sqlite3_column_int64(sqlite3_stmt *stmt, int iCol) {
 	Value val;
-	if (!sqlite3_column_has_value(stmt, iCol, SQLTypeId::BIGINT, val)) {
+	if (!sqlite3_column_has_value(stmt, iCol, LogicalType::BIGINT, val)) {
 		return 0;
 	}
 	return val.value_.bigint;
@@ -452,19 +480,44 @@ sqlite3_int64 sqlite3_column_int64(sqlite3_stmt *stmt, int iCol) {
 
 const unsigned char *sqlite3_column_text(sqlite3_stmt *pStmt, int iCol) {
 	Value val;
-	if (!sqlite3_column_has_value(pStmt, iCol, SQLTypeId::VARCHAR, val)) {
+	if (!sqlite3_column_has_value(pStmt, iCol, LogicalType::VARCHAR, val)) {
 		return nullptr;
 	}
 	try {
 		if (!pStmt->current_text) {
 			pStmt->current_text =
-			    unique_ptr<sqlite3_string_buffer[]>(new sqlite3_string_buffer[pStmt->result->sql_types.size()]);
+			    unique_ptr<sqlite3_string_buffer[]>(new sqlite3_string_buffer[pStmt->result->types.size()]);
 		}
 		auto &entry = pStmt->current_text[iCol];
 		if (!entry.data) {
 			// not initialized yet, convert the value and initialize it
 			entry.data = unique_ptr<char[]>(new char[val.str_value.size() + 1]);
 			memcpy(entry.data.get(), val.str_value.c_str(), val.str_value.size() + 1);
+			entry.data_len = val.str_value.length();
+		}
+		return (const unsigned char *)entry.data.get();
+	} catch (...) {
+		// memory error!
+		return nullptr;
+	}
+}
+
+const void *sqlite3_column_blob(sqlite3_stmt *pStmt, int iCol) {
+	Value val;
+	if (!sqlite3_column_has_value(pStmt, iCol, LogicalType::BLOB, val)) {
+		return nullptr;
+	}
+	try {
+		if (!pStmt->current_text) {
+			pStmt->current_text =
+			    unique_ptr<sqlite3_string_buffer[]>(new sqlite3_string_buffer[pStmt->result->types.size()]);
+		}
+		auto &entry = pStmt->current_text[iCol];
+		if (!entry.data) {
+			// not initialized yet, convert the value and initialize it
+			entry.data = unique_ptr<char[]>(new char[val.str_value.size() + 1]);
+			memcpy(entry.data.get(), val.str_value.c_str(), val.str_value.size() + 1);
+			entry.data_len = val.str_value.length();
 		}
 		return (const unsigned char *)entry.data.get();
 	} catch (...) {
@@ -532,6 +585,11 @@ int sqlite3_bind_null(sqlite3_stmt *stmt, int idx) {
 	return sqlite3_internal_bind_value(stmt, idx, Value());
 }
 
+SQLITE_API int sqlite3_bind_value(sqlite3_stmt *, int, const sqlite3_value *) {
+	fprintf(stderr, "sqlite3_bind_value: unsupported.\n");
+	return SQLITE_ERROR;
+}
+
 int sqlite3_bind_text(sqlite3_stmt *stmt, int idx, const char *val, int length, void (*free_func)(void *)) {
 	if (!val) {
 		return SQLITE_MISUSE;
@@ -544,8 +602,39 @@ int sqlite3_bind_text(sqlite3_stmt *stmt, int idx, const char *val, int length, 
 	}
 	if (free_func && ((ptrdiff_t)free_func) != -1) {
 		free_func((void *)val);
+		val = nullptr;
 	}
-	return sqlite3_internal_bind_value(stmt, idx, Value(value));
+	try {
+		return sqlite3_internal_bind_value(stmt, idx, Value(value));
+	} catch (std::exception &ex) {
+		return SQLITE_ERROR;
+	}
+}
+
+int sqlite3_bind_blob(sqlite3_stmt *stmt, int idx, const void *val, int length, void (*free_func)(void *)) {
+	if (!val) {
+		return SQLITE_MISUSE;
+	}
+	Value blob;
+	if (length < 0) {
+		blob = Value::BLOB(string((const char *)val));
+	} else {
+		blob = Value::BLOB((const_data_ptr_t)val, length);
+	}
+	if (free_func && ((ptrdiff_t)free_func) != -1) {
+		free_func((void *)val);
+		val = nullptr;
+	}
+	try {
+		return sqlite3_internal_bind_value(stmt, idx, blob);
+	} catch (std::exception &ex) {
+		return SQLITE_ERROR;
+	}
+}
+
+SQLITE_API int sqlite3_bind_zeroblob(sqlite3_stmt *stmt, int idx, int length) {
+	fprintf(stderr, "sqlite3_bind_zeroblob: unsupported.\n");
+	return SQLITE_ERROR;
 }
 
 int sqlite3_clear_bindings(sqlite3_stmt *stmt) {
@@ -646,6 +735,7 @@ char *sqlite3_strdup(const char *str) {
 void *sqlite3_malloc64(sqlite3_uint64 n) {
 	return malloc(n);
 }
+
 void sqlite3_free(void *pVoid) {
 	free(pVoid);
 }
@@ -669,9 +759,10 @@ int sqlite3_config(int i, ...) {
 
 int sqlite3_errcode(sqlite3 *db) {
 	if (!db) {
-		return SQLITE_MISUSE;
+		return SQLITE_NOMEM;
 	}
-	return db->last_error.empty() ? SQLITE_OK : SQLITE_ERROR;
+	// return db->last_error.empty() ? SQLITE_OK : SQLITE_ERROR;
+	return db->errCode; //! We should return the exact error code
 }
 
 int sqlite3_extended_errcode(sqlite3 *db) {
@@ -692,10 +783,11 @@ void sqlite3_interrupt(sqlite3 *db) {
 }
 
 const char *sqlite3_libversion(void) {
-	return LIB_VERSION;
+	return DuckDB::LibraryVersion();
 }
+
 const char *sqlite3_sourceid(void) {
-	return SOURCE_ID;
+	return DuckDB::SourceID();
 }
 
 int sqlite3_reset(sqlite3_stmt *stmt) {
@@ -709,56 +801,205 @@ int sqlite3_reset(sqlite3_stmt *stmt) {
 // support functions for shell.c
 // most are dummies, we don't need them really
 
-// TODO use re2 here?
-int sqlite3_strglob(const char *zGlobPattern, const char *zString) {
-	fprintf(stderr, "sqlite3_strglob: unsupported.\n");
-
-	return -1;
-}
-
-int sqlite3_strlike(const char *zPattern, const char *zStr, unsigned int esc) {
-	fprintf(stderr, "sqlite3_strlike: unsupported.\n");
-
-	return -1;
-}
-
 int sqlite3_db_status(sqlite3 *, int op, int *pCur, int *pHiwtr, int resetFlg) {
 	fprintf(stderr, "sqlite3_db_status: unsupported.\n");
 	return -1;
 }
 
-// TODO these should eventually be implemented
-
 int sqlite3_changes(sqlite3 *db) {
-	fprintf(stderr, "sqlite3_changes: unsupported.\n");
-	return 0;
+	return db->last_changes;
 }
 
-int sqlite3_total_changes(sqlite3 *) {
-	fprintf(stderr, "sqlite3_total_changes: unsupported.\n");
-	return 0;
+int sqlite3_total_changes(sqlite3 *db) {
+	return db->total_changes;
+}
+
+SQLITE_API sqlite3_int64 sqlite3_last_insert_rowid(sqlite3 *db) {
+	return SQLITE_ERROR;
+}
+
+// some code borrowed from sqlite
+// its probably best to match its behavior
+
+typedef uint8_t u8;
+
+/*
+** Token types used by the sqlite3_complete() routine.  See the header
+** comments on that procedure for additional information.
+*/
+#define tkSEMI  0
+#define tkWS    1
+#define tkOTHER 2
+
+const unsigned char sqlite3CtypeMap[256] = {
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* 00..07    ........ */
+    0x00, 0x01, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, /* 08..0f    ........ */
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* 10..17    ........ */
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* 18..1f    ........ */
+    0x01, 0x00, 0x80, 0x00, 0x40, 0x00, 0x00, 0x80, /* 20..27     !"#$%&' */
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* 28..2f    ()*+,-./ */
+    0x0c, 0x0c, 0x0c, 0x0c, 0x0c, 0x0c, 0x0c, 0x0c, /* 30..37    01234567 */
+    0x0c, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* 38..3f    89:;<=>? */
+
+    0x00, 0x0a, 0x0a, 0x0a, 0x0a, 0x0a, 0x0a, 0x02, /* 40..47    @ABCDEFG */
+    0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, /* 48..4f    HIJKLMNO */
+    0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, /* 50..57    PQRSTUVW */
+    0x02, 0x02, 0x02, 0x80, 0x00, 0x00, 0x00, 0x40, /* 58..5f    XYZ[\]^_ */
+    0x80, 0x2a, 0x2a, 0x2a, 0x2a, 0x2a, 0x2a, 0x22, /* 60..67    `abcdefg */
+    0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, /* 68..6f    hijklmno */
+    0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, /* 70..77    pqrstuvw */
+    0x22, 0x22, 0x22, 0x00, 0x00, 0x00, 0x00, 0x00, /* 78..7f    xyz{|}~. */
+
+    0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, /* 80..87    ........ */
+    0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, /* 88..8f    ........ */
+    0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, /* 90..97    ........ */
+    0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, /* 98..9f    ........ */
+    0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, /* a0..a7    ........ */
+    0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, /* a8..af    ........ */
+    0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, /* b0..b7    ........ */
+    0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, /* b8..bf    ........ */
+
+    0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, /* c0..c7    ........ */
+    0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, /* c8..cf    ........ */
+    0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, /* d0..d7    ........ */
+    0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, /* d8..df    ........ */
+    0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, /* e0..e7    ........ */
+    0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, /* e8..ef    ........ */
+    0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, /* f0..f7    ........ */
+    0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40  /* f8..ff    ........ */
+};
+
+// TODO this can probably be simplified
+#define IdChar(C) ((sqlite3CtypeMap[(unsigned char)C] & 0x46) != 0)
+
+int sqlite3_complete(const char *zSql) {
+	u8 state = 0; /* Current state, using numbers defined in header comment */
+	u8 token;     /* Value of the next token */
+
+	/* If triggers are not supported by this compile then the statement machine
+	 ** used to detect the end of a statement is much simpler
+	 */
+	static const u8 trans[3][3] = {
+	    /* Token:           */
+	    /* State:       **  SEMI  WS  OTHER */
+	    /* 0 INVALID: */ {
+	        1,
+	        0,
+	        2,
+	    },
+	    /* 1   START: */
+	    {
+	        1,
+	        1,
+	        2,
+	    },
+	    /* 2  NORMAL: */
+	    {
+	        1,
+	        2,
+	        2,
+	    },
+	};
+
+	while (*zSql) {
+		switch (*zSql) {
+		case ';': { /* A semicolon */
+			token = tkSEMI;
+			break;
+		}
+		case ' ':
+		case '\r':
+		case '\t':
+		case '\n':
+		case '\f': { /* White space is ignored */
+			token = tkWS;
+			break;
+		}
+		case '/': { /* C-style comments */
+			if (zSql[1] != '*') {
+				token = tkOTHER;
+				break;
+			}
+			zSql += 2;
+			while (zSql[0] && (zSql[0] != '*' || zSql[1] != '/')) {
+				zSql++;
+			}
+			if (zSql[0] == 0)
+				return 0;
+			zSql++;
+			token = tkWS;
+			break;
+		}
+		case '-': { /* SQL-style comments from "--" to end of line */
+			if (zSql[1] != '-') {
+				token = tkOTHER;
+				break;
+			}
+			while (*zSql && *zSql != '\n') {
+				zSql++;
+			}
+			if (*zSql == 0)
+				return state == 1;
+			token = tkWS;
+			break;
+		}
+		case '[': { /* Microsoft-style identifiers in [...] */
+			zSql++;
+			while (*zSql && *zSql != ']') {
+				zSql++;
+			}
+			if (*zSql == 0)
+				return 0;
+			token = tkOTHER;
+			break;
+		}
+		case '`': /* Grave-accent quoted symbols used by MySQL */
+		case '"': /* single- and double-quoted strings */
+		case '\'': {
+			int c = *zSql;
+			zSql++;
+			while (*zSql && *zSql != c) {
+				zSql++;
+			}
+			if (*zSql == 0)
+				return 0;
+			token = tkOTHER;
+			break;
+		}
+		default: {
+
+			if (IdChar((u8)*zSql)) {
+				/* Keywords and unquoted identifiers */
+				int nId;
+				for (nId = 1; IdChar(zSql[nId]); nId++) {
+				}
+				token = tkOTHER;
+
+				zSql += nId - 1;
+			} else {
+				/* Operators and special symbols */
+				token = tkOTHER;
+			}
+			break;
+		}
+		}
+		state = trans[state][token];
+		zSql++;
+	}
+	return state == 1;
 }
 
 // checks if input ends with ;
-int sqlite3_complete(const char *sql) {
-	// FIXME fprintf(stderr, "sqlite3_complete: unsupported.\n");
+int sqlite3_complete_old(const char *sql) {
+	fprintf(stderr, "sqlite3_complete: unsupported. '%s'\n", sql);
 	return -1;
-}
-
-int sqlite3_bind_blob(sqlite3_stmt *, int, const void *, int n, void (*)(void *)) {
-	fprintf(stderr, "sqlite3_bind_blob: unsupported.\n");
-	return -1;
-}
-
-const void *sqlite3_column_blob(sqlite3_stmt *, int iCol) {
-	fprintf(stderr, "sqlite3_column_blob: unsupported.\n");
-	return nullptr;
 }
 
 // length of varchar or blob value
-int sqlite3_column_bytes(sqlite3_stmt *, int iCol) {
-	fprintf(stderr, "sqlite3_column_bytes: unsupported.\n");
-	return -1;
+int sqlite3_column_bytes(sqlite3_stmt *pStmt, int iCol) {
+	// fprintf(stderr, "sqlite3_column_bytes: unsupported.\n");
+	return pStmt->current_text[iCol].data_len;
+	// return -1;
 }
 
 sqlite3_value *sqlite3_column_value(sqlite3_stmt *, int iCol) {
@@ -772,10 +1013,7 @@ int sqlite3_db_config(sqlite3 *, int op, ...) {
 }
 
 int sqlite3_get_autocommit(sqlite3 *db) {
-	return 1;
-	// TODO fix this
-	// return db->con->context->transaction.IsAutoCommit();
-	fprintf(stderr, "sqlite3_get_autocommit: unsupported.\n");
+	return db->con->context->transaction.IsAutoCommit();
 }
 
 int sqlite3_limit(sqlite3 *, int id, int newVal) {
@@ -803,9 +1041,51 @@ int sqlite3_table_column_metadata(sqlite3 *db,             /* Connection handle 
 	return -1;
 }
 
-const char *sqlite3_column_decltype(sqlite3_stmt *stmt, int col) {
-	fprintf(stderr, "sqlite3_column_decltype: unsupported.\n");
-	return nullptr;
+const char *sqlite3_column_decltype(sqlite3_stmt *pStmt, int iCol) {
+	if (!pStmt || !pStmt->prepared) {
+		return NULL;
+	}
+	auto column_type = pStmt->prepared->GetTypes()[iCol];
+	switch (column_type.id()) {
+	case LogicalTypeId::BOOLEAN:
+		return "BOOLEAN";
+	case LogicalTypeId::TINYINT:
+		return "TINYINT";
+	case LogicalTypeId::SMALLINT:
+		return "SMALLINT";
+	case LogicalTypeId::INTEGER:
+		return "INTEGER";
+	case LogicalTypeId::BIGINT:
+		return "BIGINT";
+	case LogicalTypeId::FLOAT:
+		return "FLOAT";
+	case LogicalTypeId::DOUBLE:
+		return "DOUBLE";
+	case LogicalTypeId::DECIMAL:
+		return "DECIMAL";
+	case LogicalTypeId::DATE:
+		return "DATE";
+	case LogicalTypeId::TIME:
+		return "TIME";
+	case LogicalTypeId::TIMESTAMP:
+	case LogicalTypeId::TIMESTAMP_NS:
+	case LogicalTypeId::TIMESTAMP_MS:
+	case LogicalTypeId::TIMESTAMP_SEC:
+		return "TIMESTAMP";
+	case LogicalTypeId::VARCHAR:
+		return "VARCHAR";
+	case LogicalTypeId::LIST:
+		return "LIST";
+	case LogicalTypeId::MAP:
+		return "MAP";
+	case LogicalTypeId::STRUCT:
+		return "STRUCT";
+	case LogicalTypeId::BLOB:
+		return "BLOB";
+	default:
+		return NULL;
+	}
+	return NULL;
 }
 
 int sqlite3_status64(int op, sqlite3_int64 *pCurrent, sqlite3_int64 *pHighwater, int resetFlag) {
@@ -887,7 +1167,38 @@ int sqlite3_create_function(sqlite3 *db, const char *zFunctionName, int nArg, in
                             void (*xFunc)(sqlite3_context *, int, sqlite3_value **),
                             void (*xStep)(sqlite3_context *, int, sqlite3_value **),
                             void (*xFinal)(sqlite3_context *)) {
-	// fprintf(stderr, "sqlite3_create_function: unsupported.\n");
+	if ((!xFunc && !xStep && !xFinal) || !zFunctionName || nArg < -1) {
+		return SQLITE_MISUSE;
+	}
+	string fname = string(zFunctionName);
+
+	// Scalar function
+	if (xFunc) {
+		auto udf_sqlite3 = SQLiteUDFWrapper::CreateSQLiteScalarFunction(xFunc, db, pApp);
+		LogicalType varargs = LogicalType::INVALID;
+		if (nArg == -1) {
+			varargs = LogicalType::ANY;
+			nArg = 0;
+		}
+
+		vector<LogicalType> argv_types(nArg);
+		for (idx_t i = 0; i < (idx_t)nArg; ++i) {
+			argv_types[i] = LogicalType::ANY;
+		}
+
+		UDFWrapper::RegisterFunction(fname, argv_types, LogicalType::VARCHAR, udf_sqlite3, *(db->con->context),
+		                             varargs);
+
+		return SQLITE_OK;
+	}
+
+	return SQLITE_MISUSE;
+}
+
+int sqlite3_create_function_v2(sqlite3 *db, const char *zFunctionName, int nArg, int eTextRep, void *pApp,
+                               void (*xFunc)(sqlite3_context *, int, sqlite3_value **),
+                               void (*xStep)(sqlite3_context *, int, sqlite3_value **),
+                               void (*xFinal)(sqlite3_context *), void (*xDestroy)(void *)) {
 	return -1;
 }
 
@@ -904,18 +1215,37 @@ static int unixCurrentTimeInt64(sqlite3_vfs *NotUsed, sqlite3_int64 *piNow) {
 	return SQLITE_OK;
 }
 
+static sqlite3_vfs static_sqlite3_virtual_file_systems[] = {{
+    3,                    // int iVersion;            /* Structure version number (currently 3) */
+    0,                    // int szOsFile;            /* Size of subclassed sqlite3_file */
+    0,                    // int mxPathname;          /* Maximum file pathname length */
+    nullptr,              // sqlite3_vfs *pNext;      /* Next registered VFS */
+    "dummy",              // const char *zName;       /* Name of this virtual file system */
+    nullptr,              // void *pAppData;          /* Pointer to application-specific data */
+    nullptr,              // int (*xOpen)(sqlite3_vfs*, const char *zName, sqlite3_file*, int flags, int *pOutFlags);
+    nullptr,              // int (*xDelete)(sqlite3_vfs*, const char *zName, int syncDir);
+    nullptr,              // int (*xAccess)(sqlite3_vfs*, const char *zName, int flags, int *pResOut);
+    nullptr,              // int (*xFullPathname)(sqlite3_vfs*, const char *zName, int nOut, char *zOut);
+    nullptr,              // void *(*xDlOpen)(sqlite3_vfs*, const char *zFilename);
+    nullptr,              // void (*xDlError)(sqlite3_vfs*, int nByte, char *zErrMsg);
+    nullptr,              // void (*(*xDlSym)(sqlite3_vfs*,void*, const char *zSymbol))(void);
+    nullptr,              // void (*xDlClose)(sqlite3_vfs*, void*);
+    nullptr,              // int (*xRandomness)(sqlite3_vfs*, int nByte, char *zOut);
+    nullptr,              // int (*xSleep)(sqlite3_vfs*, int microseconds);
+    nullptr,              // int (*xCurrentTime)(sqlite3_vfs*, double*);
+    nullptr,              // int (*xGetLastError)(sqlite3_vfs*, int, char *);
+    unixCurrentTimeInt64, // int (*xCurrentTimeInt64)(sqlite3_vfs*, sqlite3_int64*);
+    nullptr,              // int (*xSetSystemCall)(sqlite3_vfs*, const char *zName, sqlite3_syscall_ptr);
+    nullptr,              // sqlite3_syscall_ptr (*xGetSystemCall)(sqlite3_vfs*, const char *zName);
+    nullptr               // const char *(*xNextSystemCall)(sqlite3_vfs*, const char *zName);
+}};
+
 // virtual file system, providing some dummies to avoid crashes
 sqlite3_vfs *sqlite3_vfs_find(const char *zVfsName) {
 	// return a dummy because the shell does not check the return code.
-	// fprintf(stderr, "sqlite3_vfs_find: unsupported.\n");
-	sqlite3_vfs *res = (sqlite3_vfs *)sqlite3_malloc(sizeof(sqlite3_vfs));
-	res->xCurrentTimeInt64 = unixCurrentTimeInt64;
-	res->iVersion = 2;
-	res->zName = "dummy";
-	res->pNext = nullptr;
-	assert(res);
-	return res;
+	return static_sqlite3_virtual_file_systems;
 }
+
 int sqlite3_vfs_register(sqlite3_vfs *, int makeDflt) {
 	// fprintf(stderr, "sqlite3_vfs_register: unsupported.\n");
 	return -1;
@@ -927,6 +1257,7 @@ int sqlite3_backup_step(sqlite3_backup *p, int nPage) {
 	fprintf(stderr, "sqlite3_backup_step: unsupported.\n");
 	return -1;
 }
+
 int sqlite3_backup_finish(sqlite3_backup *p) {
 	fprintf(stderr, "sqlite3_backup_finish: unsupported.\n");
 	return -1;
@@ -947,8 +1278,9 @@ SQLITE_API sqlite3 *sqlite3_context_db_handle(sqlite3_context *) {
 	return nullptr;
 }
 
-void *sqlite3_user_data(sqlite3_context *) {
-	return nullptr;
+void *sqlite3_user_data(sqlite3_context *context) {
+	assert(context);
+	return context->pFunc.pUserData;
 }
 
 #ifdef _WIN32
@@ -1088,89 +1420,470 @@ SQLITE_API char *sqlite3_win32_unicode_to_utf8(LPCWSTR zWideText) {
 #endif
 
 // TODO complain
-SQLITE_API void sqlite3_result_blob(sqlite3_context *, const void *, int, void (*)(void *)) {
+SQLITE_API void sqlite3_result_blob(sqlite3_context *context, const void *blob, int n_bytes, void (*)(void *)) {
+	if (!blob) {
+		context->isError = SQLITE_MISUSE;
+		return;
+	}
+	context->result.type = SQLiteTypeValue::BLOB;
+	context->result.n = n_bytes;
+	string_t str = string_t((const char *)blob, n_bytes);
+	context->result.str_t = str;
 }
+
 SQLITE_API void sqlite3_result_blob64(sqlite3_context *, const void *, sqlite3_uint64, void (*)(void *)) {
 }
-SQLITE_API void sqlite3_result_double(sqlite3_context *, double) {
+
+SQLITE_API void sqlite3_result_double(sqlite3_context *context, double val) {
+	context->result.u.r = val;
+	context->result.type = SQLiteTypeValue::FLOAT;
 }
-SQLITE_API void sqlite3_result_error(sqlite3_context *, const char *, int) {
+
+SQLITE_API void sqlite3_result_error(sqlite3_context *context, const char *msg, int n_bytes) {
+	context->isError = SQLITE_ERROR;
+	sqlite3_result_text(context, msg, n_bytes, nullptr);
 }
+
 SQLITE_API void sqlite3_result_error16(sqlite3_context *, const void *, int) {
 }
+
 SQLITE_API void sqlite3_result_error_toobig(sqlite3_context *) {
 }
+
 SQLITE_API void sqlite3_result_error_nomem(sqlite3_context *) {
 }
+
 SQLITE_API void sqlite3_result_error_code(sqlite3_context *, int) {
 }
-SQLITE_API void sqlite3_result_int(sqlite3_context *, int) {
+
+SQLITE_API void sqlite3_result_int(sqlite3_context *context, int val) {
+	sqlite3_result_int64(context, val);
 }
-SQLITE_API void sqlite3_result_int64(sqlite3_context *, sqlite3_int64) {
+
+SQLITE_API void sqlite3_result_int64(sqlite3_context *context, sqlite3_int64 val) {
+	context->result.u.i = val;
+	context->result.type = SQLiteTypeValue::INTEGER;
 }
-SQLITE_API void sqlite3_result_null(sqlite3_context *) {
+
+SQLITE_API void sqlite3_result_null(sqlite3_context *context) {
+	context->result.type = SQLiteTypeValue::NULL_VALUE;
 }
-SQLITE_API void sqlite3_result_text(sqlite3_context *, const char *, int, void (*)(void *)) {
+
+SQLITE_API void sqlite3_result_text(sqlite3_context *context, const char *str_c, int n_chars, void (*)(void *)) {
+	if (!str_c) {
+		context->isError = SQLITE_MISUSE;
+		return;
+	}
+
+	auto utf_type = Utf8Proc::Analyze(str_c, n_chars);
+	if (utf_type == UnicodeType::INVALID) {
+		context->isError = SQLITE_MISUSE;
+		return;
+	}
+	context->result.type = SQLiteTypeValue::TEXT;
+	context->result.n = n_chars;
+	context->result.str_t = string_t(str_c, n_chars);
 }
+
 SQLITE_API void sqlite3_result_text64(sqlite3_context *, const char *, sqlite3_uint64, void (*)(void *),
                                       unsigned char encoding) {
 }
+
 SQLITE_API void sqlite3_result_text16(sqlite3_context *, const void *, int, void (*)(void *)) {
 }
+
 SQLITE_API void sqlite3_result_text16le(sqlite3_context *, const void *, int, void (*)(void *)) {
 }
+
 SQLITE_API void sqlite3_result_text16be(sqlite3_context *, const void *, int, void (*)(void *)) {
 }
+
 SQLITE_API void sqlite3_result_value(sqlite3_context *, sqlite3_value *) {
 }
+
 SQLITE_API void sqlite3_result_pointer(sqlite3_context *, void *, const char *, void (*)(void *)) {
 }
+
 SQLITE_API void sqlite3_result_zeroblob(sqlite3_context *, int n) {
 }
+
 SQLITE_API int sqlite3_result_zeroblob64(sqlite3_context *, sqlite3_uint64 n) {
 	return -1;
 }
 
 // TODO complain
-const void *sqlite3_value_blob(sqlite3_value *) {
-	return nullptr;
+const void *sqlite3_value_blob(sqlite3_value *pVal) {
+	return sqlite3_value_text(pVal);
 }
-double sqlite3_value_double(sqlite3_value *) {
+
+double sqlite3_value_double(sqlite3_value *pVal) {
+	if (!pVal) {
+		pVal->db->errCode = SQLITE_MISUSE;
+		return 0.0;
+	}
+	switch (pVal->type) {
+	case SQLiteTypeValue::FLOAT:
+		return pVal->u.r;
+	case SQLiteTypeValue::INTEGER:
+		return (double)pVal->u.i;
+	case SQLiteTypeValue::TEXT:
+	case SQLiteTypeValue::BLOB:
+		double res;
+		if (TryCast::Operation<string_t, double>(pVal->str_t, res)) {
+			return res;
+		}
+		break;
+	default:
+		break;
+	}
+	pVal->db->errCode = SQLITE_MISMATCH;
+	return 0.0;
+}
+
+int sqlite3_value_int(sqlite3_value *pVal) {
+	int64_t res = sqlite3_value_int64(pVal);
+	if (res >= NumericLimits<int>::Minimum() && res <= NumericLimits<int>::Maximum()) {
+		return res;
+	}
+	pVal->db->errCode = SQLITE_MISMATCH;
 	return 0;
 }
-int sqlite3_value_int(sqlite3_value *) {
+
+sqlite3_int64 sqlite3_value_int64(sqlite3_value *pVal) {
+	if (!pVal) {
+		pVal->db->errCode = SQLITE_MISUSE;
+		return 0;
+	}
+	int64_t res;
+	switch (pVal->type) {
+	case SQLiteTypeValue::INTEGER:
+		return pVal->u.i;
+	case SQLiteTypeValue::FLOAT:
+		if (TryCast::Operation<double, int64_t>(pVal->u.r, res)) {
+			return res;
+		}
+		break;
+	case SQLiteTypeValue::TEXT:
+	case SQLiteTypeValue::BLOB:
+		if (TryCast::Operation<string_t, int64_t>(pVal->str_t, res)) {
+			return res;
+		}
+		break;
+	default:
+		break;
+	}
+	pVal->db->errCode = SQLITE_MISMATCH;
 	return 0;
 }
-sqlite3_int64 sqlite3_value_int64(sqlite3_value *) {
-	return 0;
-}
+
 void *sqlite3_value_pointer(sqlite3_value *, const char *) {
 	return nullptr;
 }
-const unsigned char *sqlite3_value_text(sqlite3_value *) {
+
+const unsigned char *sqlite3_value_text(sqlite3_value *pVal) {
+	if (!pVal) {
+		pVal->db->errCode = SQLITE_MISUSE;
+		return nullptr;
+	}
+	// check if the string has already been allocated
+	if (pVal->szMalloc > 0) {
+		return (const unsigned char *)pVal->zMalloc;
+	}
+
+	if (pVal->type == SQLiteTypeValue::TEXT || pVal->type == SQLiteTypeValue::BLOB) {
+		auto length = pVal->str_t.GetSize();
+		// new string including space for the null-terminated char ('\0')
+		pVal->zMalloc = (char *)malloc(sizeof(char) * length + 1);
+		if (!pVal->zMalloc) {
+			pVal->db->errCode = SQLITE_NOMEM;
+			return nullptr;
+		}
+		pVal->szMalloc = length + 1;
+		memcpy(pVal->zMalloc, pVal->str_t.GetDataUnsafe(), length);
+		pVal->zMalloc[length] = '\0';
+		return (const unsigned char *)pVal->zMalloc;
+	}
+
+	if (pVal->type == SQLiteTypeValue::INTEGER || pVal->type == SQLiteTypeValue::FLOAT) {
+		Value value = (pVal->type == SQLiteTypeValue::INTEGER) ? Value::BIGINT(pVal->u.i) : Value::DOUBLE(pVal->u.r);
+		if (value.TryCastAs(LogicalType::VARCHAR) == false) {
+			pVal->db->errCode = SQLITE_NOMEM;
+			return nullptr;
+		}
+		size_t str_len = value.str_value.size();
+		pVal->zMalloc = (char *)malloc(sizeof(char) * (str_len + 1));
+		if (!pVal->zMalloc) {
+			pVal->db->errCode = SQLITE_NOMEM;
+			return nullptr;
+		}
+		pVal->szMalloc = str_len + 1; // +1 null-terminated char
+		memcpy(pVal->zMalloc, value.str_value.c_str(), pVal->szMalloc);
+
+		pVal->str_t = string_t(pVal->zMalloc, pVal->szMalloc - 1); // -1 null-terminated char
+		pVal->n = pVal->str_t.GetSize();
+		pVal->type = SQLiteTypeValue::TEXT;
+		return (const unsigned char *)pVal->zMalloc;
+	}
+	if (pVal->type == SQLiteTypeValue::NULL_VALUE) {
+		return nullptr;
+	}
+	pVal->db->errCode = SQLITE_MISMATCH;
 	return nullptr;
 }
+
 SQLITE_API const void *sqlite3_value_text16(sqlite3_value *) {
 	return nullptr;
 }
+
 SQLITE_API const void *sqlite3_value_text16le(sqlite3_value *) {
 	return nullptr;
 }
+
 SQLITE_API const void *sqlite3_value_text16be(sqlite3_value *) {
 	return nullptr;
 }
-SQLITE_API int sqlite3_value_bytes(sqlite3_value *) {
+
+SQLITE_API int sqlite3_value_bytes(sqlite3_value *pVal) {
+	if (pVal->type == SQLiteTypeValue::TEXT || pVal->type == SQLiteTypeValue::BLOB) {
+		return pVal->n;
+	}
 	return 0;
 }
+
 SQLITE_API int sqlite3_value_bytes16(sqlite3_value *) {
 	return 0;
 }
-SQLITE_API int sqlite3_value_type(sqlite3_value *) {
-	return 0;
+
+SQLITE_API int sqlite3_value_type(sqlite3_value *pVal) {
+	return (int)pVal->type;
 }
+
 SQLITE_API int sqlite3_value_numeric_type(sqlite3_value *) {
 	return 0;
 }
+
 SQLITE_API int sqlite3_value_nochange(sqlite3_value *) {
 	return 0;
+}
+
+SQLITE_API void *sqlite3_aggregate_context(sqlite3_context *, int nBytes) {
+	fprintf(stderr, "sqlite3_aggregate_context: unsupported.\n");
+
+	return nullptr;
+}
+
+SQLITE_API int sqlite3_create_collation(sqlite3 *, const char *zName, int eTextRep, void *pArg,
+                                        int (*xCompare)(void *, int, const void *, int, const void *)) {
+	return SQLITE_ERROR;
+}
+
+SQLITE_API int sqlite3_create_window_function(sqlite3 *db, const char *zFunctionName, int nArg, int eTextRep,
+                                              void *pApp, void (*xStep)(sqlite3_context *, int, sqlite3_value **),
+                                              void (*xFinal)(sqlite3_context *), void (*xValue)(sqlite3_context *),
+                                              void (*xInverse)(sqlite3_context *, int, sqlite3_value **),
+                                              void (*xDestroy)(void *)) {
+	// commented for now because such error message prevents the shell-test.py to pass
+	//	fprintf(stderr, "sqlite3_create_window_function: unsupported.\n");
+	return SQLITE_ERROR;
+}
+
+SQLITE_API sqlite3 *sqlite3_db_handle(sqlite3_stmt *s) {
+	return s->db;
+}
+
+SQLITE_API char *sqlite3_expanded_sql(sqlite3_stmt *pStmt) {
+	fprintf(stderr, "sqlite3_expanded_sql: unsupported.\n");
+	return nullptr;
+}
+
+SQLITE_API int sqlite3_keyword_check(const char *str, int len) {
+	return Parser::IsKeyword(std::string(str, len));
+}
+
+SQLITE_API int sqlite3_keyword_count(void) {
+	fprintf(stderr, "sqlite3_keyword_count: unsupported.\n");
+	return 0;
+}
+
+SQLITE_API int sqlite3_keyword_name(int, const char **, int *) {
+	fprintf(stderr, "sqlite3_keyword_name: unsupported.\n");
+	return 0;
+}
+
+SQLITE_API void sqlite3_progress_handler(sqlite3 *, int, int (*)(void *), void *) {
+	fprintf(stderr, "sqlite3_progress_handler: unsupported.\n");
+}
+
+SQLITE_API int sqlite3_stmt_isexplain(sqlite3_stmt *pStmt) {
+	if (!pStmt || !pStmt->prepared) {
+		return 0;
+	}
+	return pStmt->prepared->GetStatementType() == StatementType::EXPLAIN_STATEMENT;
+}
+
+SQLITE_API int sqlite3_vtab_config(sqlite3 *, int op, ...) {
+	fprintf(stderr, "sqlite3_vtab_config: unsupported.\n");
+	return SQLITE_ERROR;
+}
+
+SQLITE_API int sqlite3_busy_handler(sqlite3 *, int (*)(void *, int), void *) {
+	return SQLITE_ERROR;
+}
+
+SQLITE_API int sqlite3_get_table(sqlite3 *db,       /* An open database */
+                                 const char *zSql,  /* SQL to be evaluated */
+                                 char ***pazResult, /* Results of the query */
+                                 int *pnRow,        /* Number of result rows written here */
+                                 int *pnColumn,     /* Number of result columns written here */
+                                 char **pzErrmsg    /* Error msg written here */
+) {
+	fprintf(stderr, "sqlite3_get_table: unsupported.\n");
+	return SQLITE_ERROR;
+}
+
+SQLITE_API void sqlite3_free_table(char **result) {
+	fprintf(stderr, "sqlite3_free_table: unsupported.\n");
+}
+
+SQLITE_API int sqlite3_prepare(sqlite3 *db,           /* Database handle */
+                               const char *zSql,      /* SQL statement, UTF-8 encoded */
+                               int nByte,             /* Maximum length of zSql in bytes. */
+                               sqlite3_stmt **ppStmt, /* OUT: Statement handle */
+                               const char **pzTail    /* OUT: Pointer to unused portion of zSql */
+) {
+	return sqlite3_prepare_v2(db, zSql, nByte, ppStmt, pzTail);
+}
+
+SQLITE_API void *sqlite3_trace(sqlite3 *, void (*xTrace)(void *, const char *), void *) {
+	fprintf(stderr, "sqlite3_trace: unsupported.\n");
+	return nullptr;
+}
+
+SQLITE_API void *sqlite3_profile(sqlite3 *, void (*xProfile)(void *, const char *, sqlite3_uint64), void *) {
+	fprintf(stderr, "sqlite3_profile: unsupported.\n");
+	return nullptr;
+}
+
+SQLITE_API int sqlite3_libversion_number(void) {
+	return SQLITE_VERSION_NUMBER;
+}
+
+SQLITE_API int sqlite3_threadsafe(void) {
+	return SQLITE_OK;
+}
+
+SQLITE_API sqlite3_mutex *sqlite3_mutex_alloc(int) {
+	fprintf(stderr, "sqlite3_mutex_alloc: unsupported.\n");
+	return nullptr;
+}
+
+SQLITE_API void sqlite3_mutex_free(sqlite3_mutex *) {
+	fprintf(stderr, "sqlite3_mutex_free: unsupported.\n");
+}
+
+SQLITE_API int sqlite3_extended_result_codes(sqlite3 *db, int onoff) {
+	fprintf(stderr, "sqlite3_extended_result_codes: unsupported.\n");
+	return SQLITE_ERROR;
+}
+
+SQLITE_API void *sqlite3_update_hook(sqlite3 *db, /* Attach the hook to this database */
+                                     void (*xCallback)(void *, int, char const *, char const *, sqlite_int64),
+                                     void *pArg /* Argument to the function */
+) {
+	fprintf(stderr, "sqlite3_update_hook: unsupported.\n");
+	return nullptr;
+}
+
+SQLITE_API void sqlite3_log(int iErrCode, const char *zFormat, ...) {
+	fprintf(stderr, "sqlite3_log: unsupported.\n");
+}
+
+SQLITE_API int sqlite3_unlock_notify(sqlite3 *db, void (*xNotify)(void **, int), void *pArg) {
+	fprintf(stderr, "sqlite3_unlock_notify: unsupported.\n");
+	return SQLITE_ERROR;
+}
+
+SQLITE_API void *sqlite3_get_auxdata(sqlite3_context *pCtx, int iArg) {
+	fprintf(stderr, "sqlite3_get_auxdata: unsupported.\n");
+	return nullptr;
+}
+
+SQLITE_API void *sqlite3_rollback_hook(sqlite3 *db,               /* Attach the hook to this database */
+                                       void (*xCallback)(void *), /* Callback function */
+                                       void *pArg                 /* Argument to the function */
+) {
+	fprintf(stderr, "sqlite3_rollback_hook: unsupported.\n");
+	return nullptr;
+}
+
+SQLITE_API void *sqlite3_commit_hook(sqlite3 *db,              /* Attach the hook to this database */
+                                     int (*xCallback)(void *), /* Function to invoke on each commit */
+                                     void *pArg                /* Argument to the function */
+) {
+	fprintf(stderr, "sqlite3_commit_hook: unsupported.\n");
+	return nullptr;
+}
+
+SQLITE_API int sqlite3_blob_open(sqlite3 *db,          /* The database connection */
+                                 const char *zDb,      /* The attached database containing the blob */
+                                 const char *zTable,   /* The table containing the blob */
+                                 const char *zColumn,  /* The column containing the blob */
+                                 sqlite_int64 iRow,    /* The row containing the glob */
+                                 int wrFlag,           /* True -> read/write access, false -> read-only */
+                                 sqlite3_blob **ppBlob /* Handle for accessing the blob returned here */
+) {
+	fprintf(stderr, "sqlite3_blob_open: unsupported.\n");
+	return SQLITE_ERROR;
+}
+
+SQLITE_API const char *sqlite3_db_filename(sqlite3 *db, const char *zDbName) {
+	fprintf(stderr, "sqlite3_db_filename: unsupported.\n");
+	return nullptr;
+}
+
+SQLITE_API int sqlite3_stmt_busy(sqlite3_stmt *) {
+	fprintf(stderr, "sqlite3_stmt_busy: unsupported.\n");
+	return false;
+}
+
+SQLITE_API int sqlite3_bind_pointer(sqlite3_stmt *pStmt, int i, void *pPtr, const char *zPTtype,
+                                    void (*xDestructor)(void *)) {
+	fprintf(stderr, "sqlite3_bind_pointer: unsupported.\n");
+	return SQLITE_ERROR;
+}
+
+SQLITE_API int sqlite3_create_module_v2(sqlite3 *db,                   /* Database in which module is registered */
+                                        const char *zName,             /* Name assigned to this module */
+                                        const sqlite3_module *pModule, /* The definition of the module */
+                                        void *pAux,                    /* Context pointer for xCreate/xConnect */
+                                        void (*xDestroy)(void *)       /* Module destructor function */
+) {
+	fprintf(stderr, "sqlite3_create_module_v2: unsupported.\n");
+	return SQLITE_ERROR;
+}
+
+SQLITE_API int sqlite3_blob_write(sqlite3_blob *, const void *z, int n, int iOffset) {
+	fprintf(stderr, "sqlite3_blob_write: unsupported.\n");
+	return SQLITE_ERROR;
+}
+
+SQLITE_API void sqlite3_set_auxdata(sqlite3_context *, int N, void *, void (*)(void *)) {
+	fprintf(stderr, "sqlite3_set_auxdata: unsupported.\n");
+}
+
+SQLITE_API sqlite3_stmt *sqlite3_next_stmt(sqlite3 *pDb, sqlite3_stmt *pStmt) {
+	fprintf(stderr, "sqlite3_next_stmt: unsupported.\n");
+	return nullptr;
+}
+
+SQLITE_API int sqlite3_collation_needed(sqlite3 *, void *, void (*)(void *, sqlite3 *, int eTextRep, const char *)) {
+	fprintf(stderr, "sqlite3_collation_needed: unsupported.\n");
+	return SQLITE_ERROR;
+}
+
+SQLITE_API int sqlite3_create_collation_v2(sqlite3 *, const char *zName, int eTextRep, void *pArg,
+                                           int (*xCompare)(void *, int, const void *, int, const void *),
+                                           void (*xDestroy)(void *)) {
+	fprintf(stderr, "sqlite3_create_collation_v2: unsupported.\n");
+	return SQLITE_ERROR;
 }

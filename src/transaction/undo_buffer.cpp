@@ -9,14 +9,17 @@
 #include "duckdb/transaction/cleanup_state.hpp"
 #include "duckdb/transaction/commit_state.hpp"
 #include "duckdb/transaction/rollback_state.hpp"
+#include "duckdb/common/pair.hpp"
 
 #include <unordered_map>
-
-using namespace std;
 
 namespace duckdb {
 constexpr uint32_t DEFAULT_UNDO_CHUNK_SIZE = 4096 * 3;
 constexpr uint32_t UNDO_ENTRY_HEADER_SIZE = sizeof(UndoFlags) + sizeof(uint32_t);
+
+static idx_t AlignLength(idx_t len) {
+	return (len + 7) / 8 * 8;
+}
 
 UndoBuffer::UndoBuffer() {
 	head = make_unique<UndoChunk>(0);
@@ -38,9 +41,11 @@ UndoChunk::~UndoChunk() {
 }
 
 data_ptr_t UndoChunk::WriteEntry(UndoFlags type, uint32_t len) {
-	*((UndoFlags *)(data.get() + current_position)) = type;
+	len = AlignLength(len);
+	D_ASSERT(sizeof(UndoFlags) + sizeof(len) == 8);
+	Store<UndoFlags>(type, data.get() + current_position);
 	current_position += sizeof(UndoFlags);
-	*((uint32_t *)(data.get() + current_position)) = len;
+	Store<uint32_t>(len, data.get() + current_position);
 	current_position += sizeof(uint32_t);
 
 	data_ptr_t result = data.get() + current_position;
@@ -49,8 +54,8 @@ data_ptr_t UndoChunk::WriteEntry(UndoFlags type, uint32_t len) {
 }
 
 data_ptr_t UndoBuffer::CreateEntry(UndoFlags type, idx_t len) {
-	assert(len <= std::numeric_limits<uint32_t>::max());
-	idx_t needed_space = len + UNDO_ENTRY_HEADER_SIZE;
+	D_ASSERT(len <= NumericLimits<uint32_t>::Maximum());
+	idx_t needed_space = AlignLength(len + UNDO_ENTRY_HEADER_SIZE);
 	if (head->current_position + needed_space >= head->maximum_size) {
 		auto new_chunk =
 		    make_unique<UndoChunk>(needed_space > DEFAULT_UNDO_CHUNK_SIZE ? needed_space : DEFAULT_UNDO_CHUNK_SIZE);
@@ -61,16 +66,18 @@ data_ptr_t UndoBuffer::CreateEntry(UndoFlags type, idx_t len) {
 	return head->WriteEntry(type, len);
 }
 
-template <class T> void UndoBuffer::IterateEntries(UndoBuffer::IteratorState &state, T &&callback) {
+template <class T>
+void UndoBuffer::IterateEntries(UndoBuffer::IteratorState &state, T &&callback) {
 	// iterate in insertion order: start with the tail
 	state.current = tail;
 	while (state.current) {
 		state.start = state.current->data.get();
 		state.end = state.start + state.current->current_position;
 		while (state.start < state.end) {
-			UndoFlags type = *((UndoFlags *)state.start);
+			UndoFlags type = Load<UndoFlags>(state.start);
 			state.start += sizeof(UndoFlags);
-			uint32_t len = *((uint32_t *)state.start);
+
+			uint32_t len = Load<uint32_t>(state.start);
 			state.start += sizeof(uint32_t);
 			callback(type, state.start);
 			state.start += len;
@@ -88,9 +95,9 @@ void UndoBuffer::IterateEntries(UndoBuffer::IteratorState &state, UndoBuffer::It
 		state.end =
 		    state.current == end_state.current ? end_state.start : state.start + state.current->current_position;
 		while (state.start < state.end) {
-			UndoFlags type = *((UndoFlags *)state.start);
+			auto type = Load<UndoFlags>(state.start);
 			state.start += sizeof(UndoFlags);
-			uint32_t len = *((uint32_t *)state.start);
+			auto len = Load<uint32_t>(state.start);
 			state.start += sizeof(uint32_t);
 			callback(type, state.start);
 			state.start += len;
@@ -103,7 +110,8 @@ void UndoBuffer::IterateEntries(UndoBuffer::IteratorState &state, UndoBuffer::It
 	}
 }
 
-template <class T> void UndoBuffer::ReverseIterateEntries(T &&callback) {
+template <class T>
+void UndoBuffer::ReverseIterateEntries(T &&callback) {
 	// iterate in reverse insertion order: start with the head
 	auto current = head.get();
 	while (current) {
@@ -112,11 +120,11 @@ template <class T> void UndoBuffer::ReverseIterateEntries(T &&callback) {
 		// create a vector with all nodes in this chunk
 		vector<pair<UndoFlags, data_ptr_t>> nodes;
 		while (start < end) {
-			UndoFlags type = *((UndoFlags *)start);
+			auto type = Load<UndoFlags>(start);
 			start += sizeof(UndoFlags);
-			uint32_t len = *((uint32_t *)start);
+			auto len = Load<uint32_t>(start);
 			start += sizeof(uint32_t);
-			nodes.push_back(make_pair(type, start));
+			nodes.emplace_back(type, start);
 			start += len;
 		}
 		// iterate over it in reverse order
@@ -129,6 +137,16 @@ template <class T> void UndoBuffer::ReverseIterateEntries(T &&callback) {
 
 bool UndoBuffer::ChangesMade() {
 	return head->maximum_size > 0;
+}
+
+idx_t UndoBuffer::EstimatedSize() {
+	idx_t estimated_size = 0;
+	auto node = head.get();
+	while (node) {
+		estimated_size += node->current_position;
+		node = node->next.get();
+	}
+	return estimated_size;
 }
 
 void UndoBuffer::Cleanup() {

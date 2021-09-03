@@ -19,17 +19,17 @@ class TableCatalogEntry;
 
 class LogicalPrepare : public LogicalOperator {
 public:
-	LogicalPrepare(string name, unique_ptr<PreparedStatementData> prepared, unique_ptr<LogicalOperator> logical_plan)
-	    : LogicalOperator(LogicalOperatorType::PREPARE), name(name), prepared(move(prepared)) {
+	LogicalPrepare(string name, shared_ptr<PreparedStatementData> prepared, unique_ptr<LogicalOperator> logical_plan)
+	    : LogicalOperator(LogicalOperatorType::LOGICAL_PREPARE), name(name), prepared(move(prepared)) {
 		children.push_back(move(logical_plan));
 	}
 
 	string name;
-	unique_ptr<PreparedStatementData> prepared;
+	shared_ptr<PreparedStatementData> prepared;
 
 protected:
 	void ResolveTypes() override {
-		types.push_back(TypeId::BOOL);
+		types.push_back(LogicalType::BOOLEAN);
 	}
 };
 } // namespace duckdb

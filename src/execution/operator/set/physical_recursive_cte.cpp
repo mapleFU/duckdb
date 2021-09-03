@@ -4,36 +4,47 @@
 
 #include "duckdb/common/types/chunk_collection.hpp"
 #include "duckdb/execution/aggregate_hashtable.hpp"
-
-using namespace std;
+#include "duckdb/parallel/pipeline.hpp"
+#include "duckdb/storage/buffer_manager.hpp"
+#include "duckdb/parallel/task_scheduler.hpp"
 
 namespace duckdb {
 
 class PhysicalRecursiveCTEState : public PhysicalOperatorState {
 public:
-	PhysicalRecursiveCTEState() : PhysicalOperatorState(nullptr), top_done(false) {
+	explicit PhysicalRecursiveCTEState(PhysicalOperator &op) : PhysicalOperatorState(op, nullptr), top_done(false) {
 	}
 	unique_ptr<PhysicalOperatorState> top_state;
 	unique_ptr<PhysicalOperatorState> bottom_state;
-	unique_ptr<SuperLargeHashTable> ht;
+	unique_ptr<GroupedAggregateHashTable> ht;
 
 	bool top_done = false;
 
 	bool recursing = false;
 	bool intermediate_empty = true;
+	std::shared_ptr<ChunkCollection> working_table;
+	ChunkCollection intermediate_table;
 };
 
-PhysicalRecursiveCTE::PhysicalRecursiveCTE(vector<TypeId> types, bool union_all, unique_ptr<PhysicalOperator> top,
-                                           unique_ptr<PhysicalOperator> bottom)
-    : PhysicalOperator(PhysicalOperatorType::RECURSIVE_CTE, move(types)), union_all(union_all) {
+PhysicalRecursiveCTE::PhysicalRecursiveCTE(vector<LogicalType> types, bool union_all, unique_ptr<PhysicalOperator> top,
+                                           unique_ptr<PhysicalOperator> bottom, idx_t estimated_cardinality)
+    : PhysicalOperator(PhysicalOperatorType::RECURSIVE_CTE, move(types), estimated_cardinality), union_all(union_all) {
 	children.push_back(move(top));
 	children.push_back(move(bottom));
 }
 
+PhysicalRecursiveCTE::~PhysicalRecursiveCTE() {
+}
+
 // first exhaust non recursive term, then exhaust recursive term iteratively until no (new) rows are generated.
 void PhysicalRecursiveCTE::GetChunkInternal(ExecutionContext &context, DataChunk &chunk,
-                                            PhysicalOperatorState *state_) {
-	auto state = reinterpret_cast<PhysicalRecursiveCTEState *>(state_);
+                                            PhysicalOperatorState *state_p) const {
+	auto state = reinterpret_cast<PhysicalRecursiveCTEState *>(state_p);
+
+	if (!state->ht) {
+		state->ht = make_unique<GroupedAggregateHashTable>(BufferManager::GetBufferManager(context.client), types,
+		                                                   vector<LogicalType>(), vector<BoundAggregateExpression *>());
+	}
 
 	if (!state->recursing) {
 		do {
@@ -41,15 +52,17 @@ void PhysicalRecursiveCTE::GetChunkInternal(ExecutionContext &context, DataChunk
 			if (!union_all) {
 				idx_t match_count = ProbeHT(chunk, state);
 				if (match_count > 0) {
-					working_table->Append(chunk);
+					state->working_table->Append(chunk);
 				}
 			} else {
-				working_table->Append(chunk);
+				state->working_table->Append(chunk);
 			}
 
-			if (chunk.size() != 0)
+			if (chunk.size() != 0) {
 				return;
+			}
 		} while (chunk.size() != 0);
+		ExecuteRecursivePipelines(context);
 		state->recursing = true;
 	}
 
@@ -63,15 +76,11 @@ void PhysicalRecursiveCTE::GetChunkInternal(ExecutionContext &context, DataChunk
 				break;
 			}
 
-			working_table->count = 0;
-			working_table->chunks.clear();
+			state->working_table->Reset();
+			state->working_table->Merge(state->intermediate_table);
+			state->intermediate_table.Reset();
 
-			working_table->count = intermediate_table.count;
-			working_table->chunks = move(intermediate_table.chunks);
-
-			intermediate_table.count = 0;
-			intermediate_table.chunks.clear();
-
+			ExecuteRecursivePipelines(context);
 			state->bottom_state = children[1]->GetOperatorState();
 
 			state->intermediate_empty = true;
@@ -83,11 +92,13 @@ void PhysicalRecursiveCTE::GetChunkInternal(ExecutionContext &context, DataChunk
 			// intermediate tables.
 			idx_t match_count = ProbeHT(chunk, state);
 			if (match_count > 0) {
-				intermediate_table.Append(chunk);
+				state->intermediate_table.Append(chunk);
 				state->intermediate_empty = false;
+			} else {
+				continue;
 			}
 		} else {
-			intermediate_table.Append(chunk);
+			state->intermediate_table.Append(chunk);
 			state->intermediate_empty = false;
 		}
 
@@ -95,10 +106,43 @@ void PhysicalRecursiveCTE::GetChunkInternal(ExecutionContext &context, DataChunk
 	}
 }
 
-idx_t PhysicalRecursiveCTE::ProbeHT(DataChunk &chunk, PhysicalOperatorState *state_) {
-	auto state = reinterpret_cast<PhysicalRecursiveCTEState *>(state_);
+void PhysicalRecursiveCTE::ExecuteRecursivePipelines(ExecutionContext &context) const {
+	if (pipelines.empty()) {
+		return;
+	}
 
-	Vector dummy_addresses(TypeId::POINTER);
+	for (auto &pipeline : pipelines) {
+		pipeline->Reset(context.client);
+		pipeline->Schedule();
+	}
+
+	// now execute tasks until all pipelines are completed again
+	auto &scheduler = TaskScheduler::GetScheduler(context.client);
+	auto &token = pipelines[0]->token;
+	while (true) {
+		unique_ptr<Task> task;
+		while (scheduler.GetTaskFromProducer(token, task)) {
+			task->Execute();
+			task.reset();
+		}
+		bool finished = true;
+		for (auto &pipeline : pipelines) {
+			if (!pipeline->IsFinished()) {
+				finished = false;
+				break;
+			}
+		}
+		if (finished) {
+			// all pipelines finished: done!
+			break;
+		}
+	}
+}
+
+idx_t PhysicalRecursiveCTE::ProbeHT(DataChunk &chunk, PhysicalOperatorState *state_p) const {
+	auto state = reinterpret_cast<PhysicalRecursiveCTEState *>(state_p);
+
+	Vector dummy_addresses(LogicalType::POINTER);
 
 	// Use the HT to eliminate duplicate rows
 	SelectionVector new_groups(STANDARD_VECTOR_SIZE);
@@ -111,11 +155,21 @@ idx_t PhysicalRecursiveCTE::ProbeHT(DataChunk &chunk, PhysicalOperatorState *sta
 }
 
 unique_ptr<PhysicalOperatorState> PhysicalRecursiveCTE::GetOperatorState() {
-	auto state = make_unique<PhysicalRecursiveCTEState>();
+	auto state = make_unique<PhysicalRecursiveCTEState>(*this);
 	state->top_state = children[0]->GetOperatorState();
 	state->bottom_state = children[1]->GetOperatorState();
-	state->ht = make_unique<SuperLargeHashTable>(1024, types, vector<TypeId>(), vector<BoundAggregateExpression *>());
+	state->working_table = working_table;
 	return (move(state));
+}
+
+void PhysicalRecursiveCTE::FinalizeOperatorState(PhysicalOperatorState &state_p, ExecutionContext &context) {
+	auto &state = reinterpret_cast<PhysicalRecursiveCTEState &>(state_p);
+	if (!children.empty() && state.top_state) {
+		children[0]->FinalizeOperatorState(*state.top_state, context);
+	}
+	if (!children.empty() && state.bottom_state) {
+		children[1]->FinalizeOperatorState(*state.bottom_state, context);
+	}
 }
 
 } // namespace duckdb

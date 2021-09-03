@@ -1,14 +1,20 @@
 #include "duckdb/function/scalar/date_functions.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
 void BuiltinFunctions::RegisterDateFunctions() {
 	Register<AgeFun>();
+	Register<DateDiffFun>();
 	Register<DatePartFun>();
+	Register<DateSubFun>();
 	Register<DateTruncFun>();
 	Register<CurrentTimeFun>();
 	Register<CurrentDateFun>();
 	Register<CurrentTimestampFun>();
 	Register<EpochFun>();
+	Register<StrfTimeFun>();
+	Register<StrpTimeFun>();
+	Register<ToIntervalFun>();
 }
+
+} // namespace duckdb

@@ -3,12 +3,15 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/types/hash.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
+#include "duckdb/storage/statistics/base_statistics.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
-Expression::Expression(ExpressionType type, ExpressionClass expression_class, TypeId return_type)
-    : BaseExpression(type, expression_class), return_type(return_type) {
+Expression::Expression(ExpressionType type, ExpressionClass expression_class, LogicalType return_type)
+    : BaseExpression(type, expression_class), return_type(move(return_type)) {
+}
+
+Expression::~Expression() {
 }
 
 bool Expression::IsAggregate() const {
@@ -31,6 +34,16 @@ bool Expression::IsScalar() const {
 		}
 	});
 	return is_scalar;
+}
+
+bool Expression::HasSideEffects() const {
+	bool has_side_effects = false;
+	ExpressionIterator::EnumerateChildren(*this, [&](const Expression &child) {
+		if (child.HasSideEffects()) {
+			has_side_effects = true;
+		}
+	});
+	return has_side_effects;
 }
 
 bool Expression::IsFoldable() const {
@@ -58,8 +71,10 @@ bool Expression::HasSubquery() const {
 
 hash_t Expression::Hash() const {
 	hash_t hash = duckdb::Hash<uint32_t>((uint32_t)type);
-	hash = CombineHash(hash, duckdb::Hash<uint32_t>((uint32_t)return_type));
+	hash = CombineHash(hash, return_type.Hash());
 	ExpressionIterator::EnumerateChildren(*this,
 	                                      [&](const Expression &child) { hash = CombineHash(child.Hash(), hash); });
 	return hash;
 }
+
+} // namespace duckdb

@@ -2,6 +2,8 @@
 
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/catalog/catalog_entry/scalar_function_catalog_entry.hpp"
+#include "duckdb/common/types/hash.hpp"
+#include "duckdb/common/limits.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/function/aggregate_function.hpp"
 #include "duckdb/function/cast_rules.hpp"
@@ -10,23 +12,28 @@
 #include "duckdb/parser/parsed_data/create_aggregate_function_info.hpp"
 #include "duckdb/parser/parsed_data/create_collation_info.hpp"
 #include "duckdb/parser/parsed_data/create_copy_function_info.hpp"
+#include "duckdb/parser/parsed_data/create_pragma_function_info.hpp"
 #include "duckdb/parser/parsed_data/create_scalar_function_info.hpp"
 #include "duckdb/parser/parsed_data/create_table_function_info.hpp"
+#include "duckdb/parser/parsed_data/pragma_info.hpp"
+#include "duckdb/planner/expression/bound_aggregate_expression.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
 // add your initializer for new functions here
 void BuiltinFunctions::Initialize() {
 	RegisterSQLiteFunctions();
 	RegisterReadFunctions();
 	RegisterTableFunctions();
+	RegisterArrowFunctions();
 
 	RegisterAlgebraicAggregates();
 	RegisterDistributiveAggregates();
 	RegisterNestedAggregates();
+	RegisterHolisticAggregates();
+	RegisterRegressiveAggregates();
 
 	RegisterDateFunctions();
 	RegisterGenericFunctions();
@@ -37,14 +44,12 @@ void BuiltinFunctions::Initialize() {
 	RegisterNestedFunctions();
 	RegisterTrigonometricsFunctions();
 
-	// binder functions
-	// FIXME shouldn't be here
-	AddFunction(ScalarFunction("alias", {SQLType::ANY}, SQLType::VARCHAR, nullptr));
-	AddFunction(ScalarFunction("typeof", {SQLType::ANY}, SQLType::VARCHAR, nullptr));
+	RegisterPragmaFunctions();
 
 	// initialize collations
 	AddCollation("nocase", LowerFun::GetFunction(), true);
 	AddCollation("noaccent", StripAccentsFun::GetFunction());
+	AddCollation("nfc", NFCNormalizeFun::GetFunction());
 }
 
 BuiltinFunctions::BuiltinFunctions(ClientContext &context, Catalog &catalog) : context(context), catalog(catalog) {
@@ -57,21 +62,31 @@ void BuiltinFunctions::AddCollation(string name, ScalarFunction function, bool c
 }
 
 void BuiltinFunctions::AddFunction(AggregateFunctionSet set) {
-	CreateAggregateFunctionInfo info(set);
+	CreateAggregateFunctionInfo info(move(set));
 	catalog.CreateFunction(context, &info);
 }
 
 void BuiltinFunctions::AddFunction(AggregateFunction function) {
-	CreateAggregateFunctionInfo info(function);
+	CreateAggregateFunctionInfo info(move(function));
 	catalog.CreateFunction(context, &info);
+}
+
+void BuiltinFunctions::AddFunction(PragmaFunction function) {
+	CreatePragmaFunctionInfo info(move(function));
+	catalog.CreatePragmaFunction(context, &info);
+}
+
+void BuiltinFunctions::AddFunction(const string &name, vector<PragmaFunction> functions) {
+	CreatePragmaFunctionInfo info(name, move(functions));
+	catalog.CreatePragmaFunction(context, &info);
 }
 
 void BuiltinFunctions::AddFunction(ScalarFunction function) {
-	CreateScalarFunctionInfo info(function);
+	CreateScalarFunctionInfo info(move(function));
 	catalog.CreateFunction(context, &info);
 }
 
-void BuiltinFunctions::AddFunction(vector<string> names, ScalarFunction function) {
+void BuiltinFunctions::AddFunction(const vector<string> &names, ScalarFunction function) { // NOLINT: false positive
 	for (auto &name : names) {
 		function.name = name;
 		AddFunction(function);
@@ -79,41 +94,68 @@ void BuiltinFunctions::AddFunction(vector<string> names, ScalarFunction function
 }
 
 void BuiltinFunctions::AddFunction(ScalarFunctionSet set) {
-	CreateScalarFunctionInfo info(set);
+	CreateScalarFunctionInfo info(move(set));
 	catalog.CreateFunction(context, &info);
 }
 
 void BuiltinFunctions::AddFunction(TableFunction function) {
-	CreateTableFunctionInfo info(function);
+	CreateTableFunctionInfo info(move(function));
+	catalog.CreateTableFunction(context, &info);
+}
+
+void BuiltinFunctions::AddFunction(TableFunctionSet set) {
+	CreateTableFunctionInfo info(move(set));
 	catalog.CreateTableFunction(context, &info);
 }
 
 void BuiltinFunctions::AddFunction(CopyFunction function) {
-	CreateCopyFunctionInfo info(function);
+	CreateCopyFunctionInfo info(move(function));
 	catalog.CreateCopyFunction(context, &info);
 }
 
-string Function::CallToString(string name, vector<SQLType> arguments) {
+hash_t BaseScalarFunction::Hash() const {
+	hash_t hash = return_type.Hash();
+	for (auto &arg : arguments) {
+		duckdb::CombineHash(hash, arg.Hash());
+	}
+	return hash;
+}
+
+string Function::CallToString(const string &name, const vector<LogicalType> &arguments) {
 	string result = name + "(";
 	result += StringUtil::Join(arguments, arguments.size(), ", ",
-	                           [](const SQLType &argument) { return SQLTypeToString(argument); });
+	                           [](const LogicalType &argument) { return argument.ToString(); });
 	return result + ")";
 }
 
-string Function::CallToString(string name, vector<SQLType> arguments, SQLType return_type) {
+string Function::CallToString(const string &name, const vector<LogicalType> &arguments,
+                              const LogicalType &return_type) {
 	string result = CallToString(name, arguments);
-	result += " -> " + SQLTypeToString(return_type);
+	result += " -> " + return_type.ToString();
 	return result;
 }
 
-static int64_t BindVarArgsFunctionCost(SimpleFunction &func, vector<SQLType> &arguments) {
+string Function::CallToString(const string &name, const vector<LogicalType> &arguments,
+                              const unordered_map<string, LogicalType> &named_parameters) {
+	vector<string> input_arguments;
+	input_arguments.reserve(arguments.size() + named_parameters.size());
+	for (auto &arg : arguments) {
+		input_arguments.push_back(arg.ToString());
+	}
+	for (auto &kv : named_parameters) {
+		input_arguments.push_back(StringUtil::Format("%s : %s", kv.first, kv.second.ToString()));
+	}
+	return StringUtil::Format("%s(%s)", name, StringUtil::Join(input_arguments, ", "));
+}
+
+static int64_t BindVarArgsFunctionCost(SimpleFunction &func, vector<LogicalType> &arguments) {
 	if (arguments.size() < func.arguments.size()) {
 		// not enough arguments to fulfill the non-vararg part of the function
 		return -1;
 	}
 	int64_t cost = 0;
 	for (idx_t i = 0; i < arguments.size(); i++) {
-		SQLType arg_type = i < func.arguments.size() ? func.arguments[i] : func.varargs;
+		LogicalType arg_type = i < func.arguments.size() ? func.arguments[i] : func.varargs;
 		if (arguments[i] == arg_type) {
 			// arguments match: do nothing
 			continue;
@@ -130,7 +172,7 @@ static int64_t BindVarArgsFunctionCost(SimpleFunction &func, vector<SQLType> &ar
 	return cost;
 }
 
-static int64_t BindFunctionCost(SimpleFunction &func, vector<SQLType> &arguments) {
+static int64_t BindFunctionCost(SimpleFunction &func, vector<LogicalType> &arguments) {
 	if (func.HasVarArgs()) {
 		// special case varargs function
 		return BindVarArgsFunctionCost(func, arguments);
@@ -141,7 +183,7 @@ static int64_t BindFunctionCost(SimpleFunction &func, vector<SQLType> &arguments
 	}
 	int64_t cost = 0;
 	for (idx_t i = 0; i < arguments.size(); i++) {
-		if (arguments[i] == func.arguments[i]) {
+		if (arguments[i].id() == func.arguments[i].id()) {
 			// arguments match: do nothing
 			continue;
 		}
@@ -158,9 +200,10 @@ static int64_t BindFunctionCost(SimpleFunction &func, vector<SQLType> &arguments
 }
 
 template <class T>
-static idx_t BindFunctionFromArguments(string name, vector<T> &functions, vector<SQLType> &arguments) {
+static idx_t BindFunctionFromArguments(const string &name, vector<T> &functions, vector<LogicalType> &arguments,
+                                       string &error) {
 	idx_t best_function = INVALID_INDEX;
-	int64_t lowest_cost = numeric_limits<int64_t>::max();
+	int64_t lowest_cost = NumericLimits<int64_t>::Maximum();
 	vector<idx_t> conflicting_functions;
 	for (idx_t f_idx = 0; f_idx < functions.size(); f_idx++) {
 		auto &func = functions[f_idx];
@@ -181,7 +224,7 @@ static idx_t BindFunctionFromArguments(string name, vector<T> &functions, vector
 		lowest_cost = cost;
 		best_function = f_idx;
 	}
-	if (conflicting_functions.size() > 0) {
+	if (!conflicting_functions.empty()) {
 		// there are multiple possible function definitions
 		// throw an exception explaining which overloads are there
 		conflicting_functions.push_back(best_function);
@@ -191,9 +234,11 @@ static idx_t BindFunctionFromArguments(string name, vector<T> &functions, vector
 			auto &f = functions[conf];
 			candidate_str += "\t" + f.ToString() + "\n";
 		}
-		throw BinderException("Could not choose a best candidate function for the function call \"%s\". In order to "
-		                      "select one, please add explicit type casts.\n\tCandidate functions:\n%s",
-		                      call_str.c_str(), candidate_str.c_str());
+		error =
+		    StringUtil::Format("Could not choose a best candidate function for the function call \"%s\". In order to "
+		                       "select one, please add explicit type casts.\n\tCandidate functions:\n%s",
+		                       call_str, candidate_str);
+		return INVALID_INDEX;
 	}
 	if (best_function == INVALID_INDEX) {
 		// no matching function was found, throw an error
@@ -202,59 +247,163 @@ static idx_t BindFunctionFromArguments(string name, vector<T> &functions, vector
 		for (auto &f : functions) {
 			candidate_str += "\t" + f.ToString() + "\n";
 		}
-		throw BinderException("No function matches the given name and argument types '%s'. You might need to add "
-		                      "explicit type casts.\n\tCandidate functions:\n%s",
-		                      call_str.c_str(), candidate_str.c_str());
+		error = StringUtil::Format("No function matches the given name and argument types '%s'. You might need to add "
+		                           "explicit type casts.\n\tCandidate functions:\n%s",
+		                           call_str, candidate_str);
+		return INVALID_INDEX;
 	}
 	return best_function;
 }
 
-idx_t Function::BindFunction(string name, vector<ScalarFunction> &functions, vector<SQLType> &arguments) {
-	return BindFunctionFromArguments(name, functions, arguments);
+idx_t Function::BindFunction(const string &name, vector<ScalarFunction> &functions, vector<LogicalType> &arguments,
+                             string &error) {
+	return BindFunctionFromArguments(name, functions, arguments, error);
 }
 
-idx_t Function::BindFunction(string name, vector<AggregateFunction> &functions, vector<SQLType> &arguments) {
-	return BindFunctionFromArguments(name, functions, arguments);
+idx_t Function::BindFunction(const string &name, vector<AggregateFunction> &functions, vector<LogicalType> &arguments,
+                             string &error) {
+	return BindFunctionFromArguments(name, functions, arguments, error);
 }
 
-void SimpleFunction::CastToFunctionArguments(vector<unique_ptr<Expression>> &children, vector<SQLType> &types) {
-	for (idx_t i = 0; i < types.size(); i++) {
+idx_t Function::BindFunction(const string &name, vector<TableFunction> &functions, vector<LogicalType> &arguments,
+                             string &error) {
+	return BindFunctionFromArguments(name, functions, arguments, error);
+}
+
+idx_t Function::BindFunction(const string &name, vector<PragmaFunction> &functions, PragmaInfo &info, string &error) {
+	vector<LogicalType> types;
+	for (auto &value : info.parameters) {
+		types.push_back(value.type());
+	}
+	idx_t entry = BindFunctionFromArguments(name, functions, types, error);
+	if (entry == INVALID_INDEX) {
+		throw BinderException(error);
+	}
+	auto &candidate_function = functions[entry];
+	// cast the input parameters
+	for (idx_t i = 0; i < info.parameters.size(); i++) {
+		auto target_type =
+		    i < candidate_function.arguments.size() ? candidate_function.arguments[i] : candidate_function.varargs;
+		info.parameters[i] = info.parameters[i].CastAs(target_type);
+	}
+	return entry;
+}
+
+vector<LogicalType> GetLogicalTypesFromExpressions(vector<unique_ptr<Expression>> &arguments) {
+	vector<LogicalType> types;
+	types.reserve(arguments.size());
+	for (auto &argument : arguments) {
+		types.push_back(argument->return_type);
+	}
+	return types;
+}
+
+idx_t Function::BindFunction(const string &name, vector<ScalarFunction> &functions,
+                             vector<unique_ptr<Expression>> &arguments, string &error) {
+	auto types = GetLogicalTypesFromExpressions(arguments);
+	return Function::BindFunction(name, functions, types, error);
+}
+
+idx_t Function::BindFunction(const string &name, vector<AggregateFunction> &functions,
+                             vector<unique_ptr<Expression>> &arguments, string &error) {
+	auto types = GetLogicalTypesFromExpressions(arguments);
+	return Function::BindFunction(name, functions, types, error);
+}
+
+idx_t Function::BindFunction(const string &name, vector<TableFunction> &functions,
+                             vector<unique_ptr<Expression>> &arguments, string &error) {
+	auto types = GetLogicalTypesFromExpressions(arguments);
+	return Function::BindFunction(name, functions, types, error);
+}
+
+void BaseScalarFunction::CastToFunctionArguments(vector<unique_ptr<Expression>> &children) {
+	for (idx_t i = 0; i < children.size(); i++) {
 		auto target_type = i < this->arguments.size() ? this->arguments[i] : this->varargs;
-		if (target_type.id != SQLTypeId::ANY && types[i] != target_type) {
-			// type of child does not match type of function argument: add a cast
-			children[i] = BoundCastExpression::AddCastToType(move(children[i]), types[i], target_type);
-			types[i] = target_type;
+		target_type.Verify();
+		// check if the type of child matches the type of function argument
+		// if not we need to add a cast
+		bool require_cast = children[i]->return_type != target_type;
+		// except for one special case: if the function accepts ANY argument
+		// in that case we don't add a cast
+		if (target_type.id() == LogicalTypeId::ANY) {
+			if (children[i]->return_type.id() == LogicalTypeId::UNKNOWN) {
+				// UNLESS the child is a prepared statement parameter
+				// in that case we default the prepared statement parameter to VARCHAR
+				target_type = LogicalType::VARCHAR;
+			} else {
+				require_cast = false;
+			}
+		}
+		if (require_cast) {
+			children[i] = BoundCastExpression::AddCastToType(move(children[i]), target_type);
 		}
 	}
 }
 
-unique_ptr<BoundFunctionExpression> ScalarFunction::BindScalarFunction(ClientContext &context, string schema,
-                                                                       string name, vector<SQLType> &arguments,
+unique_ptr<BoundFunctionExpression> ScalarFunction::BindScalarFunction(ClientContext &context, const string &schema,
+                                                                       const string &name,
                                                                        vector<unique_ptr<Expression>> children,
-                                                                       bool is_operator) {
+                                                                       string &error, bool is_operator) {
 	// bind the function
-	auto function = Catalog::GetCatalog(context).GetEntry(context, CatalogType::SCALAR_FUNCTION, schema, name);
-	assert(function && function->type == CatalogType::SCALAR_FUNCTION);
-	return ScalarFunction::BindScalarFunction(context, (ScalarFunctionCatalogEntry &)*function, arguments,
-	                                          move(children), is_operator);
+	auto function = Catalog::GetCatalog(context).GetEntry(context, CatalogType::SCALAR_FUNCTION_ENTRY, schema, name);
+	D_ASSERT(function && function->type == CatalogType::SCALAR_FUNCTION_ENTRY);
+	return ScalarFunction::BindScalarFunction(context, (ScalarFunctionCatalogEntry &)*function, move(children), error,
+	                                          is_operator);
 }
 
-unique_ptr<BoundFunctionExpression>
-ScalarFunction::BindScalarFunction(ClientContext &context, ScalarFunctionCatalogEntry &func, vector<SQLType> &arguments,
-                                   vector<unique_ptr<Expression>> children, bool is_operator) {
+unique_ptr<BoundFunctionExpression> ScalarFunction::BindScalarFunction(ClientContext &context,
+                                                                       ScalarFunctionCatalogEntry &func,
+                                                                       vector<unique_ptr<Expression>> children,
+                                                                       string &error, bool is_operator) {
 	// bind the function
-	idx_t best_function = Function::BindFunction(func.name, func.functions, arguments);
+	idx_t best_function = Function::BindFunction(func.name, func.functions, children, error);
+	if (best_function == INVALID_INDEX) {
+		return nullptr;
+	}
 	// found a matching function!
 	auto &bound_function = func.functions[best_function];
+	return ScalarFunction::BindScalarFunction(context, bound_function, move(children), is_operator);
+}
+
+unique_ptr<BoundFunctionExpression> ScalarFunction::BindScalarFunction(ClientContext &context,
+                                                                       ScalarFunction bound_function,
+                                                                       vector<unique_ptr<Expression>> children,
+                                                                       bool is_operator) {
+	unique_ptr<FunctionData> bind_info;
+	if (bound_function.bind) {
+		bind_info = bound_function.bind(context, bound_function, children);
+	}
 	// check if we need to add casts to the children
-	bound_function.CastToFunctionArguments(children, arguments);
+	bound_function.CastToFunctionArguments(children);
 
 	// now create the function
-	auto result =
-	    make_unique<BoundFunctionExpression>(GetInternalType(bound_function.return_type), bound_function, move(arguments), bound_function.return_type, is_operator);
-	result->children = move(children);
-	if (bound_function.bind) {
-		result->bind_info = bound_function.bind(*result, context);
-	}
-	return result;
+	auto return_type = bound_function.return_type;
+	return make_unique<BoundFunctionExpression>(move(return_type), move(bound_function), move(children),
+	                                            move(bind_info), is_operator);
 }
+
+unique_ptr<BoundAggregateExpression>
+AggregateFunction::BindAggregateFunction(ClientContext &context, AggregateFunction bound_function,
+                                         vector<unique_ptr<Expression>> children, unique_ptr<Expression> filter,
+                                         bool is_distinct, unique_ptr<BoundOrderModifier> order_bys) {
+	unique_ptr<FunctionData> bind_info;
+	if (bound_function.bind) {
+		bind_info = bound_function.bind(context, bound_function, children);
+		// we may have lost some arguments in the bind
+		children.resize(MinValue(bound_function.arguments.size(), children.size()));
+	}
+
+	// check if we need to add casts to the children
+	bound_function.CastToFunctionArguments(children);
+
+	// Special case: for ORDER BY aggregates, we wrap the aggregate function in a SortedAggregateFunction
+	// The children are the sort clauses and the binding contains the ordering data.
+	if (order_bys && !order_bys->orders.empty()) {
+		bind_info = BindSortedAggregate(bound_function, children, move(bind_info), move(order_bys));
+	}
+
+	return make_unique<BoundAggregateExpression>(move(bound_function), move(children), move(filter), move(bind_info),
+	                                             is_distinct);
+}
+
+} // namespace duckdb

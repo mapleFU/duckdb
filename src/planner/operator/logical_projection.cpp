@@ -1,10 +1,9 @@
 #include "duckdb/planner/operator/logical_projection.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
 LogicalProjection::LogicalProjection(idx_t table_index, vector<unique_ptr<Expression>> select_list)
-    : LogicalOperator(LogicalOperatorType::PROJECTION, move(select_list)), table_index(table_index) {
+    : LogicalOperator(LogicalOperatorType::LOGICAL_PROJECTION, move(select_list)), table_index(table_index) {
 }
 
 vector<ColumnBinding> LogicalProjection::GetColumnBindings() {
@@ -16,3 +15,5 @@ void LogicalProjection::ResolveTypes() {
 		types.push_back(expr->return_type);
 	}
 }
+
+} // namespace duckdb

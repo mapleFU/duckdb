@@ -18,17 +18,18 @@ class ChunkCollection;
 class PhysicalComparisonJoin : public PhysicalJoin {
 public:
 	PhysicalComparisonJoin(LogicalOperator &op, PhysicalOperatorType type, vector<JoinCondition> cond,
-	                       JoinType join_type);
+	                       JoinType join_type, idx_t estimated_cardinality);
 
 	vector<JoinCondition> conditions;
 
 public:
-	string ExtraRenderInformation() const override;
+	string ParamsToString() const override;
 
 	//! Construct the join result of a join with an empty RHS
 	static void ConstructEmptyJoinResult(JoinType type, bool has_null, DataChunk &input, DataChunk &result);
 	//! Construct the remainder of a Full Outer Join based on which tuples in the RHS found no match
-	static void ConstructFullOuterJoinResult(bool *found_match, ChunkCollection &input, DataChunk &result, idx_t &scan_position);
+	static void ConstructFullOuterJoinResult(bool *found_match, ChunkCollection &input, DataChunk &result,
+	                                         idx_t &scan_position);
 };
 
 } // namespace duckdb

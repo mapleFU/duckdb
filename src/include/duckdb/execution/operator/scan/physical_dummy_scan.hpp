@@ -14,10 +14,11 @@ namespace duckdb {
 
 class PhysicalDummyScan : public PhysicalOperator {
 public:
-	PhysicalDummyScan(vector<TypeId> types) : PhysicalOperator(PhysicalOperatorType::DUMMY_SCAN, types) {
+	explicit PhysicalDummyScan(vector<LogicalType> types, idx_t estimated_cardinality)
+	    : PhysicalOperator(PhysicalOperatorType::DUMMY_SCAN, move(types), estimated_cardinality) {
 	}
 
 public:
-	void GetChunkInternal(ExecutionContext &context, DataChunk &chunk, PhysicalOperatorState *state) override;
+	void GetChunkInternal(ExecutionContext &context, DataChunk &chunk, PhysicalOperatorState *state) const override;
 };
 } // namespace duckdb

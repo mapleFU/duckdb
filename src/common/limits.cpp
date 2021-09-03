@@ -1,62 +1,105 @@
 #include "duckdb/common/limits.hpp"
 
 #include "duckdb/common/exception.hpp"
-
-using namespace std;
+#include "duckdb/common/windows_undefs.hpp"
+#include <limits>
 
 namespace duckdb {
 
-// we offset the minimum value by 1 to account for the NULL value in the
-// hashtables
-int64_t MinimumValue(TypeId type) {
-	switch (type) {
-	case TypeId::INT8:
-		return MinimumValue<int8_t>();
-	case TypeId::INT16:
-		return MinimumValue<int16_t>();
-	case TypeId::INT32:
-		return MinimumValue<int32_t>();
-	case TypeId::INT64:
-		return MinimumValue<int64_t>();
-	case TypeId::HASH:
-		return MinimumValue<uint64_t>();
-	case TypeId::POINTER:
-		return MinimumValue<uintptr_t>();
-	default:
-		throw InvalidTypeException(type, "MinimumValue requires integral type");
-	}
+using std::numeric_limits;
+
+int8_t NumericLimits<int8_t>::Minimum() {
+	return numeric_limits<int8_t>::lowest();
 }
 
-uint64_t MaximumValue(TypeId type) {
-	switch (type) {
-	case TypeId::INT8:
-		return MaximumValue<int8_t>();
-	case TypeId::INT16:
-		return MaximumValue<int16_t>();
-	case TypeId::INT32:
-		return MaximumValue<int32_t>();
-	case TypeId::INT64:
-		return MaximumValue<int64_t>();
-	case TypeId::HASH:
-		return MaximumValue<uint64_t>();
-	case TypeId::POINTER:
-		return MaximumValue<uintptr_t>();
-	default:
-		throw InvalidTypeException(type, "MaximumValue requires integral type");
-	}
+int8_t NumericLimits<int8_t>::Maximum() {
+	return numeric_limits<int8_t>::max();
 }
 
-TypeId MinimalType(int64_t value) {
-	if (value >= MinimumValue(TypeId::INT8) && (uint64_t)value <= MaximumValue(TypeId::INT8)) {
-		return TypeId::INT8;
-	}
-	if (value >= MinimumValue(TypeId::INT16) && (uint64_t)value <= MaximumValue(TypeId::INT16)) {
-		return TypeId::INT16;
-	}
-	if (value >= MinimumValue(TypeId::INT32) && (uint64_t)value <= MaximumValue(TypeId::INT32)) {
-		return TypeId::INT32;
-	}
-	return TypeId::INT64;
+int16_t NumericLimits<int16_t>::Minimum() {
+	return numeric_limits<int16_t>::lowest();
+}
+
+int16_t NumericLimits<int16_t>::Maximum() {
+	return numeric_limits<int16_t>::max();
+}
+
+int32_t NumericLimits<int32_t>::Minimum() {
+	return numeric_limits<int32_t>::lowest();
+}
+
+int32_t NumericLimits<int32_t>::Maximum() {
+	return numeric_limits<int32_t>::max();
+}
+
+int64_t NumericLimits<int64_t>::Minimum() {
+	return numeric_limits<int64_t>::lowest();
+}
+
+int64_t NumericLimits<int64_t>::Maximum() {
+	return numeric_limits<int64_t>::max();
+}
+
+float NumericLimits<float>::Minimum() {
+	return numeric_limits<float>::lowest();
+}
+
+float NumericLimits<float>::Maximum() {
+	return numeric_limits<float>::max();
+}
+
+double NumericLimits<double>::Minimum() {
+	return numeric_limits<double>::lowest();
+}
+
+double NumericLimits<double>::Maximum() {
+	return numeric_limits<double>::max();
+}
+
+uint8_t NumericLimits<uint8_t>::Minimum() {
+	return numeric_limits<uint8_t>::lowest();
+}
+
+uint8_t NumericLimits<uint8_t>::Maximum() {
+	return numeric_limits<uint8_t>::max();
+}
+
+uint16_t NumericLimits<uint16_t>::Minimum() {
+	return numeric_limits<uint16_t>::lowest();
+}
+
+uint16_t NumericLimits<uint16_t>::Maximum() {
+	return numeric_limits<uint16_t>::max();
+}
+
+uint32_t NumericLimits<uint32_t>::Minimum() {
+	return numeric_limits<uint32_t>::lowest();
+}
+
+uint32_t NumericLimits<uint32_t>::Maximum() {
+	return numeric_limits<uint32_t>::max();
+}
+
+uint64_t NumericLimits<uint64_t>::Minimum() {
+	return numeric_limits<uint64_t>::lowest();
+}
+
+uint64_t NumericLimits<uint64_t>::Maximum() {
+	return numeric_limits<uint64_t>::max();
+}
+
+hugeint_t NumericLimits<hugeint_t>::Minimum() {
+	hugeint_t result;
+	result.lower = 1;
+	result.upper = numeric_limits<int64_t>::lowest();
+	return result;
+}
+
+hugeint_t NumericLimits<hugeint_t>::Maximum() {
+	hugeint_t result;
+	result.lower = numeric_limits<uint64_t>::max();
+	result.upper = numeric_limits<int64_t>::max();
+	return result;
 }
 
 } // namespace duckdb

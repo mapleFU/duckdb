@@ -2,8 +2,7 @@
 
 #include "duckdb/common/serializer.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
 bool EmptyTableRef::Equals(const TableRef *other) const {
 	return TableRef::Equals(other);
@@ -20,3 +19,5 @@ void EmptyTableRef::Serialize(Serializer &serializer) {
 unique_ptr<TableRef> EmptyTableRef::Deserialize(Deserializer &source) {
 	return make_unique<EmptyTableRef>();
 }
+
+} // namespace duckdb

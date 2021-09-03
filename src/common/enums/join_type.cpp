@@ -1,7 +1,5 @@
 #include "duckdb/common/enums/join_type.hpp"
 
-using namespace std;
-
 namespace duckdb {
 
 string JoinTypeToString(JoinType type) {
@@ -22,10 +20,18 @@ string JoinTypeToString(JoinType type) {
 		return "SINGLE";
 	case JoinType::MARK:
 		return "MARK";
-	case JoinType::INVALID:
-	default:
-		return "INVALID";
+	case JoinType::INVALID: // LCOV_EXCL_START
+		break;
 	}
+	return "INVALID";
+} // LCOV_EXCL_STOP
+
+bool IsLeftOuterJoin(JoinType type) {
+	return type == JoinType::LEFT || type == JoinType::OUTER;
+}
+
+bool IsRightOuterJoin(JoinType type) {
+	return type == JoinType::OUTER || type == JoinType::RIGHT;
 }
 
 } // namespace duckdb

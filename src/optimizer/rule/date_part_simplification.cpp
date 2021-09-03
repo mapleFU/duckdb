@@ -8,8 +8,7 @@
 #include "duckdb/common/enums/date_part_specifier.hpp"
 #include "duckdb/function/function.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
 DatePartSimplificationRule::DatePartSimplificationRule(ExpressionRewriter &rewriter) : Rule(rewriter) {
 	auto func = make_unique<FunctionExpressionMatcher>();
@@ -58,6 +57,9 @@ unique_ptr<Expression> DatePartSimplificationRule::Apply(LogicalOperator &op, ve
 	case DatePartSpecifier::WEEK:
 		new_function_name = "week";
 		break;
+	case DatePartSpecifier::YEARWEEK:
+		new_function_name = "yearweek";
+		break;
 	case DatePartSpecifier::DOW:
 		new_function_name = "dayofweek";
 		break;
@@ -89,10 +91,16 @@ unique_ptr<Expression> DatePartSimplificationRule::Apply(LogicalOperator &op, ve
 		return nullptr;
 	}
 	// found a replacement function: bind it
-	vector<SQLType> arguments{date_part.function.arguments[1]};
 	vector<unique_ptr<Expression>> children;
 	children.push_back(move(date_part.children[1]));
 
-	return ScalarFunction::BindScalarFunction(rewriter.context, DEFAULT_SCHEMA, new_function_name, arguments,
-	                                          move(children), false);
+	string error;
+	auto function = ScalarFunction::BindScalarFunction(rewriter.context, DEFAULT_SCHEMA, new_function_name,
+	                                                   move(children), error, false);
+	if (!function) {
+		throw BinderException(error);
+	}
+	return move(function);
 }
+
+} // namespace duckdb

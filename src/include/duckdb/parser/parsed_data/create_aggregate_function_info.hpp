@@ -14,18 +14,28 @@
 namespace duckdb {
 
 struct CreateAggregateFunctionInfo : public CreateFunctionInfo {
-	CreateAggregateFunctionInfo(AggregateFunction function)
-	    : CreateFunctionInfo(CatalogType::AGGREGATE_FUNCTION), functions(function.name) {
+	explicit CreateAggregateFunctionInfo(AggregateFunction function)
+	    : CreateFunctionInfo(CatalogType::AGGREGATE_FUNCTION_ENTRY), functions(function.name) {
 		this->name = function.name;
 		functions.AddFunction(move(function));
 	}
 
-	CreateAggregateFunctionInfo(AggregateFunctionSet set)
-	    : CreateFunctionInfo(CatalogType::AGGREGATE_FUNCTION), functions(move(set)) {
+	explicit CreateAggregateFunctionInfo(AggregateFunctionSet set)
+	    : CreateFunctionInfo(CatalogType::AGGREGATE_FUNCTION_ENTRY), functions(move(set)) {
 		this->name = functions.name;
+		for (auto &func : functions.functions) {
+			func.name = functions.name;
+		}
 	}
 
 	AggregateFunctionSet functions;
+
+public:
+	unique_ptr<CreateInfo> Copy() const override {
+		auto result = make_unique<CreateAggregateFunctionInfo>(functions);
+		CopyProperties(*result);
+		return move(result);
+	}
 };
 
 } // namespace duckdb

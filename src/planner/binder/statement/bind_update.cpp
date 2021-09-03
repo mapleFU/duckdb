@@ -12,10 +12,9 @@
 #include "duckdb/parser/expression/columnref_expression.hpp"
 #include "duckdb/storage/data_table.hpp"
 #include "duckdb/planner/bound_tableref.hpp"
-
+#include "duckdb/planner/tableref/bound_basetableref.hpp"
+#include "duckdb/planner/tableref/bound_crossproductref.hpp"
 #include <algorithm>
-
-using namespace std;
 
 namespace duckdb {
 
@@ -43,15 +42,33 @@ static void BindExtraColumns(TableCatalogEntry &table, LogicalGet &get, LogicalP
 			}
 			// column is not projected yet: project it by adding the clause "i=i" to the set of updated columns
 			auto &column = table.columns[check_column_id];
-			auto col_type = GetInternalType(column.type);
-			// first add
 			update.expressions.push_back(make_unique<BoundColumnRefExpression>(
-			    col_type, ColumnBinding(proj.table_index, proj.expressions.size())));
-			proj.expressions.push_back(
-			    make_unique<BoundColumnRefExpression>(col_type, ColumnBinding(get.table_index, get.column_ids.size())));
+			    column.type, ColumnBinding(proj.table_index, proj.expressions.size())));
+			proj.expressions.push_back(make_unique<BoundColumnRefExpression>(
+			    column.type, ColumnBinding(get.table_index, get.column_ids.size())));
 			get.column_ids.push_back(check_column_id);
 			update.columns.push_back(check_column_id);
 		}
+	}
+}
+
+static bool TypeSupportsRegularUpdate(const LogicalType &type) {
+	switch (type.id()) {
+	case LogicalTypeId::LIST:
+	case LogicalTypeId::MAP:
+		// lists and maps don't support updates directly
+		return false;
+	case LogicalTypeId::STRUCT: {
+		auto &child_types = StructType::GetChildTypes(type);
+		for (auto &entry : child_types) {
+			if (!TypeSupportsRegularUpdate(entry.second)) {
+				return false;
+			}
+		}
+		return true;
+	}
+	default:
+		return true;
 	}
 }
 
@@ -69,16 +86,26 @@ static void BindUpdateConstraints(TableCatalogEntry &table, LogicalGet &get, Log
 			BindExtraColumns(table, get, proj, update, check.bound_columns);
 		}
 	}
-	// for index updates, we do the same, however, for index updates we always turn any update into an insert and a
-	// delete for the insert, we thus need all the columns to be available, hence we check if the update touches any
-	// index columns
-	update.is_index_update = false;
-	for (auto &index : table.storage->info->indexes) {
-		if (index->IndexIsUpdated(update.columns)) {
-			update.is_index_update = true;
+	// for index updates we always turn any update into an insert and a delete
+	// we thus need all the columns to be available, hence we check if the update touches any index columns
+	update.update_is_del_and_insert = false;
+	table.storage->info->indexes.Scan([&](Index &index) {
+		if (index.IndexIsUpdated(update.columns)) {
+			update.update_is_del_and_insert = true;
+			return true;
+		}
+		return false;
+	});
+
+	// we also convert any updates on LIST columns into delete + insert
+	for (auto &col : update.columns) {
+		if (!TypeSupportsRegularUpdate(table.columns[col].type)) {
+			update.update_is_del_and_insert = true;
+			break;
 		}
 	}
-	if (update.is_index_update) {
+
+	if (update.update_is_del_and_insert) {
 		// the update updates a column required by an index, push projections for all columns
 		unordered_set<column_t> all_columns;
 		for (idx_t i = 0; i < table.storage->types.size(); i++) {
@@ -90,16 +117,28 @@ static void BindUpdateConstraints(TableCatalogEntry &table, LogicalGet &get, Log
 
 BoundStatement Binder::Bind(UpdateStatement &stmt) {
 	BoundStatement result;
+	unique_ptr<LogicalOperator> root;
+	LogicalGet *get;
+
 	// visit the table reference
 	auto bound_table = Bind(*stmt.table);
 	if (bound_table->type != TableReferenceType::BASE_TABLE) {
 		throw BinderException("Can only update base table!");
 	}
-	auto root = CreatePlan(*bound_table);
-	auto &get = (LogicalGet &)*root;
-	assert(root->type == LogicalOperatorType::GET && get.table);
+	auto &table_binding = (BoundBaseTableRef &)*bound_table;
+	auto table = table_binding.table;
 
-	auto &table = get.table;
+	if (stmt.from_table) {
+		BoundCrossProductRef bound_crossproduct;
+		bound_crossproduct.left = move(bound_table);
+		bound_crossproduct.right = Bind(*stmt.from_table);
+		root = CreatePlan(bound_crossproduct);
+		get = (LogicalGet *)root->children[0].get();
+	} else {
+		root = CreatePlan(*bound_table);
+		get = (LogicalGet *)root.get();
+	}
+
 	if (!table->temporary) {
 		// update of persistent table: not read only!
 		this->read_only = false;
@@ -119,7 +158,7 @@ BoundStatement Binder::Bind(UpdateStatement &stmt) {
 		root = move(filter);
 	}
 
-	assert(stmt.columns.size() == stmt.expressions.size());
+	D_ASSERT(stmt.columns.size() == stmt.expressions.size());
 
 	auto proj_index = GenerateTableIndex();
 	vector<unique_ptr<Expression>> projection_expressions;
@@ -127,17 +166,16 @@ BoundStatement Binder::Bind(UpdateStatement &stmt) {
 		auto &colname = stmt.columns[i];
 		auto &expr = stmt.expressions[i];
 		if (!table->ColumnExists(colname)) {
-			throw BinderException("Referenced update column %s not found in table!", colname.c_str());
+			throw BinderException("Referenced update column %s not found in table!", colname);
 		}
 		auto &column = table->GetColumn(colname);
 		if (std::find(update->columns.begin(), update->columns.end(), column.oid) != update->columns.end()) {
-			throw BinderException("Multiple assignments to same column \"%s\"", colname.c_str());
+			throw BinderException("Multiple assignments to same column \"%s\"", colname);
 		}
 		update->columns.push_back(column.oid);
 
 		if (expr->type == ExpressionType::VALUE_DEFAULT) {
-			update->expressions.push_back(
-			    make_unique<BoundDefaultExpression>(GetInternalType(column.type), column.type));
+			update->expressions.push_back(make_unique<BoundDefaultExpression>(column.type));
 		} else {
 			UpdateBinder binder(*this, context);
 			binder.target_type = column.type;
@@ -154,19 +192,20 @@ BoundStatement Binder::Bind(UpdateStatement &stmt) {
 	proj->AddChild(move(root));
 
 	// bind any extra columns necessary for CHECK constraints or indexes
-	BindUpdateConstraints(*table, get, *proj, *update);
+	BindUpdateConstraints(*table, *get, *proj, *update);
 
 	// finally add the row id column to the projection list
-	proj->expressions.push_back(
-	    make_unique<BoundColumnRefExpression>(ROW_TYPE, ColumnBinding(get.table_index, get.column_ids.size())));
-	get.column_ids.push_back(COLUMN_IDENTIFIER_ROW_ID);
+	proj->expressions.push_back(make_unique<BoundColumnRefExpression>(
+	    LOGICAL_ROW_TYPE, ColumnBinding(get->table_index, get->column_ids.size())));
+	get->column_ids.push_back(COLUMN_IDENTIFIER_ROW_ID);
 
 	// set the projection as child of the update node and finalize the result
 	update->AddChild(move(proj));
 
 	result.names = {"Count"};
-	result.types = {SQLType::BIGINT};
+	result.types = {LogicalType::BIGINT};
 	result.plan = move(update);
+	this->allow_stream_result = false;
 	return result;
 }
 

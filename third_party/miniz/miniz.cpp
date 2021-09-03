@@ -26,13 +26,12 @@
 
 #include "miniz.hpp"
 
+namespace duckdb_miniz {
 typedef unsigned char mz_validate_uint16[sizeof(mz_uint16) == 2 ? 1 : -1];
 typedef unsigned char mz_validate_uint32[sizeof(mz_uint32) == 4 ? 1 : -1];
 typedef unsigned char mz_validate_uint64[sizeof(mz_uint64) == 8 ? 1 : -1];
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+
 
 /* ------------------- zlib-style API's */
 
@@ -570,9 +569,7 @@ const char *mz_error(int err)
 
 #endif /*MINIZ_NO_ZLIB_APIS */
 
-#ifdef __cplusplus
-}
-#endif
+
 
 /*
   This is free and unencumbered software released into the public domain.
@@ -624,14 +621,7 @@ const char *mz_error(int err)
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  *
- **************************************************************************/
-
-
-
-
-#ifdef __cplusplus
-extern "C" {
-#endif
+ ***********************************************************************/
 
 /* ------------------- Low-level Compression (independent from all decompression API's) */
 
@@ -2160,9 +2150,6 @@ void tdefl_compressor_free(tdefl_compressor *pComp)
 //#pragma warning(pop)
 #endif
 
-#ifdef __cplusplus
-}
-#endif
 /**************************************************************************
  *
  * Copyright 2013-2014 RAD Game Tools and Valve Software
@@ -2191,9 +2178,6 @@ void tdefl_compressor_free(tdefl_compressor *pComp)
 
 
 
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 /* ------------------- Low-level Decompression (completely independent from all compression API's) */
 
@@ -2894,9 +2878,8 @@ void tinfl_decompressor_free(tinfl_decompressor *pDecomp)
     MZ_FREE(pDecomp);
 }
 
-#ifdef __cplusplus
-}
-#endif
+
+
 /**************************************************************************
  *
  * Copyright 2013-2014 RAD Game Tools and Valve Software
@@ -2927,9 +2910,7 @@ void tinfl_decompressor_free(tinfl_decompressor *pDecomp)
 
 #ifndef MINIZ_NO_ARCHIVE_APIS
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+
 
 /* ------------------- .ZIP archive reading */
 
@@ -4811,7 +4792,7 @@ mz_zip_reader_extract_iter_state* mz_zip_reader_extract_iter_new(mz_zip_archive 
         if (!((flags & MZ_ZIP_FLAG_COMPRESSED_DATA) || (!pState->file_stat.m_method)))
         {
             /* Decompression required, therefore intermediate read buffer required */
-            pState->read_buf_size = MZ_MIN(pState->file_stat.m_comp_size, MZ_ZIP_MAX_IO_BUF_SIZE);
+            pState->read_buf_size = MZ_MIN(pState->file_stat.m_comp_size, int(MZ_ZIP_MAX_IO_BUF_SIZE));
             if (NULL == (pState->pRead_buf = pZip->m_pAlloc(pZip->m_pAlloc_opaque, 1, (size_t)pState->read_buf_size)))
             {
                 mz_zip_set_error(pZip, MZ_ZIP_ALLOC_FAILED);
@@ -7557,8 +7538,7 @@ mz_bool mz_zip_end(mz_zip_archive *pZip)
     return MZ_FALSE;
 }
 
-#ifdef __cplusplus
-}
-#endif
+
 
 #endif /*#ifndef MINIZ_NO_ARCHIVE_APIS*/
+} // namespace duckdb_miniz

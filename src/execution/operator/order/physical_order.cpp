@@ -1,104 +1,218 @@
 #include "duckdb/execution/operator/order/physical_order.hpp"
 
-#include "duckdb/common/assert.hpp"
-#include "duckdb/common/value_operations/value_operations.hpp"
-#include "duckdb/common/vector_operations/vector_operations.hpp"
+#include "duckdb/common/sort/sort.hpp"
 #include "duckdb/execution/expression_executor.hpp"
-#include "duckdb/storage/data_table.hpp"
-
-using namespace std;
+#include "duckdb/main/client_context.hpp"
+#include "duckdb/parallel/task_context.hpp"
+#include "duckdb/storage/buffer_manager.hpp"
 
 namespace duckdb {
 
-class PhysicalOrderOperatorState : public PhysicalOperatorState {
-public:
-	PhysicalOrderOperatorState(PhysicalOperator *child) : PhysicalOperatorState(child), position(0) {
-	}
-
-	idx_t position;
-};
+PhysicalOrder::PhysicalOrder(vector<LogicalType> types, vector<BoundOrderByNode> orders, idx_t estimated_cardinality)
+    : PhysicalSink(PhysicalOperatorType::ORDER_BY, move(types), estimated_cardinality), orders(move(orders)) {
+}
 
 //===--------------------------------------------------------------------===//
 // Sink
 //===--------------------------------------------------------------------===//
-class OrderByGlobalOperatorState : public GlobalOperatorState {
+class OrderGlobalState : public GlobalOperatorState {
 public:
-	//! The lock for updating the global aggregate state
-	mutex lock;
-	//! The sorted data
-	ChunkCollection sorted_data;
-	//! The sorted vector
-	unique_ptr<idx_t[]> sorted_vector;
+	OrderGlobalState(BufferManager &buffer_manager, PhysicalOrder &order, RowLayout &payload_layout)
+	    : global_sort_state(buffer_manager, order.orders, payload_layout) {
+	}
+
+	//! Global sort state
+	GlobalSortState global_sort_state;
+	//! Memory usage per thread
+	idx_t memory_per_thread;
+};
+
+class OrderLocalState : public LocalSinkState {
+public:
+	OrderLocalState() {
+	}
+
+public:
+	//! The local sort state
+	LocalSortState local_sort_state;
+	//! Local copy of the sorting expression executor
+	ExpressionExecutor executor;
+	//! Holds a vector of incoming sorting columns
+	DataChunk sort;
 };
 
 unique_ptr<GlobalOperatorState> PhysicalOrder::GetGlobalState(ClientContext &context) {
-	return make_unique<OrderByGlobalOperatorState>();
+	// Get the payload layout from the return types
+	RowLayout payload_layout;
+	payload_layout.Initialize(types, false);
+	auto state = make_unique<OrderGlobalState>(BufferManager::GetBufferManager(context), *this, payload_layout);
+	// Set external (can be force with the PRAGMA)
+	state->global_sort_state.external = context.force_external;
+	// Memory usage per thread should scale with max mem / num threads
+	// We take 1/5th of this, to be conservative
+	idx_t max_memory = BufferManager::GetBufferManager(context).GetMaxMemory();
+	idx_t num_threads = TaskScheduler::GetScheduler(context).NumberOfThreads();
+	state->memory_per_thread = (max_memory / num_threads) / 5;
+	return move(state);
 }
 
-void PhysicalOrder::Sink(ExecutionContext &context, GlobalOperatorState &state, LocalSinkState &lstate,
-                         DataChunk &input) {
-	// concatenate all the data of the child chunks
-	auto &gstate = (OrderByGlobalOperatorState &)state;
-	lock_guard<mutex> glock(gstate.lock);
-	gstate.sorted_data.Append(input);
+unique_ptr<LocalSinkState> PhysicalOrder::GetLocalSinkState(ExecutionContext &context) {
+	auto result = make_unique<OrderLocalState>();
+	// Initialize order clause expression executor and DataChunk
+	vector<LogicalType> types;
+	for (auto &order : orders) {
+		types.push_back(order.expression->return_type);
+		result->executor.AddExpression(*order.expression);
+	}
+	result->sort.Initialize(types);
+	return move(result);
 }
 
-//===--------------------------------------------------------------------===//
-// Finalize
-//===--------------------------------------------------------------------===//
-void PhysicalOrder::Finalize(ClientContext &context, unique_ptr<GlobalOperatorState> state) {
-	// finalize: perform the actual sorting
-	auto &sink = (OrderByGlobalOperatorState &)*state;
-	ChunkCollection &big_data = sink.sorted_data;
+void PhysicalOrder::Sink(ExecutionContext &context, GlobalOperatorState &gstate_p, LocalSinkState &lstate_p,
+                         DataChunk &input) const {
+	auto &gstate = (OrderGlobalState &)gstate_p;
+	auto &lstate = (OrderLocalState &)lstate_p;
 
-	// compute the sorting columns from the input data
-	ExpressionExecutor executor;
-	vector<TypeId> sort_types;
-	vector<OrderType> order_types;
-	vector<OrderByNullType> null_order_types;
-	for (idx_t i = 0; i < orders.size(); i++) {
-		auto &expr = orders[i].expression;
-		sort_types.push_back(expr->return_type);
-		order_types.push_back(orders[i].type);
-		null_order_types.push_back(orders[i].null_order);
-		executor.AddExpression(*expr);
+	auto &global_sort_state = gstate.global_sort_state;
+	auto &local_sort_state = lstate.local_sort_state;
+
+	// Initialize local state (if necessary)
+	if (!local_sort_state.initialized) {
+		local_sort_state.Initialize(global_sort_state, BufferManager::GetBufferManager(context.client));
 	}
 
-	ChunkCollection sort_collection;
-	for (idx_t i = 0; i < big_data.chunks.size(); i++) {
-		DataChunk sort_chunk;
-		sort_chunk.Initialize(sort_types);
+	// Obtain sorting columns
+	auto &sort = lstate.sort;
+	lstate.executor.Execute(input, sort);
 
-		executor.Execute(*big_data.chunks[i], sort_chunk);
-		sort_collection.Append(sort_chunk);
+	// Sink the data into the local sort state
+	local_sort_state.SinkChunk(sort, input);
+
+	// When sorting data reaches a certain size, we sort it
+	if (local_sort_state.SizeInBytes() >= gstate.memory_per_thread) {
+		local_sort_state.Sort(global_sort_state);
+	}
+}
+
+void PhysicalOrder::Combine(ExecutionContext &context, GlobalOperatorState &gstate_p, LocalSinkState &lstate_p) {
+	auto &gstate = (OrderGlobalState &)gstate_p;
+	auto &lstate = (OrderLocalState &)lstate_p;
+	gstate.global_sort_state.AddLocalState(lstate.local_sort_state);
+}
+
+class PhysicalOrderMergeTask : public Task {
+public:
+	PhysicalOrderMergeTask(Pipeline &parent, ClientContext &context, OrderGlobalState &state)
+	    : parent(parent), context(context), state(state) {
 	}
 
-	assert(sort_collection.count == big_data.count);
+	void Execute() override {
+		// Initialize merge sorted and iterate until done
+		auto &global_sort_state = state.global_sort_state;
+		MergeSorter merge_sorter(global_sort_state, BufferManager::GetBufferManager(context));
+		merge_sorter.PerformInMergeRound();
+		// Finish task and act if all tasks are finished
+		lock_guard<mutex> state_guard(global_sort_state.lock);
+		parent.finished_tasks++;
+		if (parent.finished_tasks == parent.total_tasks) {
+			global_sort_state.CompleteMergeRound();
+			if (global_sort_state.sorted_blocks.size() == 1) {
+				// Only one block left: Done!
+				parent.Finish();
+			} else {
+				// Schedule the next round
+				PhysicalOrder::ScheduleMergeTasks(parent, context, state);
+			}
+		}
+	}
 
-	// now perform the actual sort
-	sink.sorted_vector = unique_ptr<idx_t[]>(new idx_t[sort_collection.count]);
-	sort_collection.Sort(order_types, null_order_types, sink.sorted_vector.get());
+private:
+	Pipeline &parent;
+	ClientContext &context;
+	OrderGlobalState &state;
+};
 
-	PhysicalSink::Finalize(context, move(state));
+bool PhysicalOrder::Finalize(Pipeline &pipeline, ClientContext &context, unique_ptr<GlobalOperatorState> state_p) {
+	this->sink_state = move(state_p);
+	auto &state = (OrderGlobalState &)*this->sink_state;
+	auto &global_sort_state = state.global_sort_state;
+
+	if (global_sort_state.sorted_blocks.empty()) {
+		// Empty input!
+		return true;
+	}
+
+	// Prepare for merge sort phase
+	global_sort_state.PrepareMergePhase();
+
+	// Start the merge phase or finish if a merge is not necessary
+	if (global_sort_state.sorted_blocks.size() > 1) {
+		PhysicalOrder::ScheduleMergeTasks(pipeline, context, state);
+		return false;
+	} else {
+		return true;
+	}
+}
+
+void PhysicalOrder::ScheduleMergeTasks(Pipeline &pipeline, ClientContext &context, OrderGlobalState &state) {
+	// Initialize global sort state for a round of merging
+	state.global_sort_state.InitializeMergeRound();
+	// Schedule tasks equal to the number of threads, which will each merge multiple partitions
+	auto &ts = TaskScheduler::GetScheduler(context);
+	idx_t num_threads = ts.NumberOfThreads();
+	pipeline.total_tasks += num_threads;
+	for (idx_t tnum = 0; tnum < num_threads; tnum++) {
+		auto new_task = make_unique<PhysicalOrderMergeTask>(pipeline, context, state);
+		ts.ScheduleTask(pipeline.token, move(new_task));
+	}
 }
 
 //===--------------------------------------------------------------------===//
 // GetChunkInternal
 //===--------------------------------------------------------------------===//
-void PhysicalOrder::GetChunkInternal(ExecutionContext &context, DataChunk &chunk, PhysicalOperatorState *state_) {
-	auto state = reinterpret_cast<PhysicalOrderOperatorState *>(state_);
-	auto &sink = (OrderByGlobalOperatorState &)*this->sink_state;
-	ChunkCollection &big_data = sink.sorted_data;
-	if (state->position >= big_data.count) {
-		return;
+class PhysicalOrderOperatorState : public PhysicalOperatorState {
+public:
+	PhysicalOrderOperatorState(PhysicalOperator &op, PhysicalOperator *child) : PhysicalOperatorState(op, child) {
 	}
 
-	big_data.MaterializeSortedChunk(chunk, sink.sorted_vector.get(), state->position);
-	state->position += STANDARD_VECTOR_SIZE;
-}
+public:
+	//! Payload scanner
+	unique_ptr<SortedDataScanner> scanner = nullptr;
+};
 
 unique_ptr<PhysicalOperatorState> PhysicalOrder::GetOperatorState() {
-	return make_unique<PhysicalOrderOperatorState>(children[0].get());
+	return make_unique<PhysicalOrderOperatorState>(*this, children[0].get());
+}
+
+void PhysicalOrder::GetChunkInternal(ExecutionContext &context, DataChunk &chunk,
+                                     PhysicalOperatorState *state_p) const {
+	auto &state = *reinterpret_cast<PhysicalOrderOperatorState *>(state_p);
+
+	if (!state.scanner) {
+		// Initialize scanner (if not yet initialized)
+		auto &gstate = (OrderGlobalState &)*this->sink_state;
+		auto &global_sort_state = gstate.global_sort_state;
+		if (global_sort_state.sorted_blocks.empty()) {
+			return;
+		}
+		state.scanner =
+		    make_unique<SortedDataScanner>(*global_sort_state.sorted_blocks[0]->payload_data, global_sort_state);
+	}
+
+	// Scan the next data chunk
+	state.scanner->Scan(chunk);
+}
+
+string PhysicalOrder::ParamsToString() const {
+	string result;
+	for (idx_t i = 0; i < orders.size(); i++) {
+		if (i > 0) {
+			result += "\n";
+		}
+		result += orders[i].expression->ToString() + " ";
+		result += orders[i].type == OrderType::DESCENDING ? "DESC" : "ASC";
+	}
+	return result;
 }
 
 } // namespace duckdb

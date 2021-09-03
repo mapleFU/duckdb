@@ -1,5 +1,4 @@
 #include "utf8proc_wrapper.hpp"
-#include "utf8proc_wrapper.h"
 #include "utf8proc.hpp"
 
 using namespace std;
@@ -22,27 +21,51 @@ namespace duckdb {
 //	3	U+000800	U+00FFFF		1110xxxx
 //	4	U+010000	U+10FFFF		11110xxx
 
-UnicodeType Utf8Proc::Analyze(const char *s, size_t len) {
+static void AssignInvalidUTF8Reason(UnicodeInvalidReason *invalid_reason, size_t *invalid_pos, size_t pos, UnicodeInvalidReason reason) {
+	if (invalid_reason) {
+		*invalid_reason = reason;
+	}
+	if (invalid_pos) {
+		*invalid_pos = pos;
+	}
+}
+
+UnicodeType Utf8Proc::Analyze(const char *s, size_t len, UnicodeInvalidReason *invalid_reason, size_t *invalid_pos) {
 	UnicodeType type = UnicodeType::ASCII;
 	char c;
 	for (size_t i = 0; i < len; i++) {
 		c = s[i];
+		if (c == '\0') {
+			AssignInvalidUTF8Reason(invalid_reason, invalid_pos, i, UnicodeInvalidReason::NULL_BYTE);
+			return UnicodeType::INVALID;
+		}
 		// 1 Byte / ASCII
-		if ((c & 0x80) == 0)
+		if ((c & 0x80) == 0) {
 			continue;
+		}
 		type = UnicodeType::UNICODE;
-		if ((s[++i] & 0xC0) != 0x80)
+		if ((s[++i] & 0xC0) != 0x80) {
+			AssignInvalidUTF8Reason(invalid_reason, invalid_pos, i, UnicodeInvalidReason::BYTE_MISMATCH);
 			return UnicodeType::INVALID;
-		if ((c & 0xE0) == 0xC0)
+		}
+		if ((c & 0xE0) == 0xC0) {
 			continue;
-		if ((s[++i] & 0xC0) != 0x80)
+		}
+		if ((s[++i] & 0xC0) != 0x80) {
+			AssignInvalidUTF8Reason(invalid_reason, invalid_pos, i, UnicodeInvalidReason::BYTE_MISMATCH);
 			return UnicodeType::INVALID;
-		if ((c & 0xF0) == 0xE0)
+		}
+		if ((c & 0xF0) == 0xE0) {
 			continue;
-		if ((s[++i] & 0xC0) != 0x80)
+		}
+		if ((s[++i] & 0xC0) != 0x80) {
+			AssignInvalidUTF8Reason(invalid_reason, invalid_pos, i, UnicodeInvalidReason::BYTE_MISMATCH);
 			return UnicodeType::INVALID;
-		if ((c & 0xF8) == 0xF0)
+		}
+		if ((c & 0xF8) == 0xF0) {
 			continue;
+		}
+		AssignInvalidUTF8Reason(invalid_reason, invalid_pos, i, UnicodeInvalidReason::BYTE_MISMATCH);
 		return UnicodeType::INVALID;
 	}
 
@@ -50,17 +73,10 @@ UnicodeType Utf8Proc::Analyze(const char *s, size_t len) {
 }
 
 
-std::string Utf8Proc::Normalize(std::string s) {
-	auto normalized = Normalize(s.c_str());
-	auto res = std::string(normalized);
-	free(normalized);
-	return res;
-}
-
-char* Utf8Proc::Normalize(const char *s) {
+char* Utf8Proc::Normalize(const char *s, size_t len) {
 	assert(s);
-	assert(Utf8Proc::Analyze(s) != UnicodeType::INVALID);
-	return (char*) utf8proc_NFC((const utf8proc_uint8_t*) s);
+	assert(Utf8Proc::Analyze(s, len) != UnicodeType::INVALID);
+	return (char*) utf8proc_NFC((const utf8proc_uint8_t*) s, len);
 }
 
 bool Utf8Proc::IsValid(const char *s, size_t len) {
@@ -85,23 +101,23 @@ size_t Utf8Proc::PreviousGraphemeCluster(const char *s, size_t len, size_t cpos)
 	}
 }
 
+bool Utf8Proc::CodepointToUtf8(int cp, int &sz, char *c) {
+	return utf8proc_codepoint_to_utf8(cp, sz, c);
 }
 
-size_t utf8proc_next_grapheme_cluster(const char *s, size_t len, size_t pos) {
-	return duckdb::Utf8Proc::NextGraphemeCluster(s, len, pos);
+int Utf8Proc::CodepointLength(int cp) {
+	return utf8proc_codepoint_length(cp);
 }
 
-size_t utf8proc_prev_grapheme_cluster(const char *s, size_t len, size_t pos) {
-	return duckdb::Utf8Proc::PreviousGraphemeCluster(s, len, pos);
+int32_t Utf8Proc::UTF8ToCodepoint(const char *c, int &sz) {
+	return utf8proc_codepoint(c, sz);
 }
 
-size_t utf8proc_render_width(const char *s, size_t len, size_t pos) {
-	int sz;
-	auto codepoint = duckdb::utf8proc_codepoint(s + pos, sz);
-	auto properties = duckdb::utf8proc_get_property(codepoint);
-	return properties->charwidth;
+size_t Utf8Proc::RenderWidth(const char *s, size_t len, size_t pos) {
+    int sz;
+    auto codepoint = duckdb::utf8proc_codepoint(s + pos, sz);
+    auto properties = duckdb::utf8proc_get_property(codepoint);
+    return properties->charwidth;
 }
 
-int utf8proc_is_valid(const char *s, size_t len) {
-	return duckdb::Utf8Proc::IsValid(s, len) ? 1 : 0;
 }

@@ -2,16 +2,15 @@
 #include "duckdb/parser/expression/operator_expression.hpp"
 #include "duckdb/parser/transformer.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
-unique_ptr<ParsedExpression> Transformer::TransformBoolExpr(PGBoolExpr *root) {
+unique_ptr<ParsedExpression> Transformer::TransformBoolExpr(duckdb_libpgquery::PGBoolExpr *root, idx_t depth) {
 	unique_ptr<ParsedExpression> result;
 	for (auto node = root->args->head; node != nullptr; node = node->next) {
-		auto next = TransformExpression(reinterpret_cast<PGNode *>(node->data.ptr_value));
+		auto next = TransformExpression(reinterpret_cast<duckdb_libpgquery::PGNode *>(node->data.ptr_value), depth + 1);
 
 		switch (root->boolop) {
-		case PG_AND_EXPR: {
+		case duckdb_libpgquery::PG_AND_EXPR: {
 			if (!result) {
 				result = move(next);
 			} else {
@@ -19,7 +18,7 @@ unique_ptr<ParsedExpression> Transformer::TransformBoolExpr(PGBoolExpr *root) {
 			}
 			break;
 		}
-		case PG_OR_EXPR: {
+		case duckdb_libpgquery::PG_OR_EXPR: {
 			if (!result) {
 				result = move(next);
 			} else {
@@ -27,7 +26,7 @@ unique_ptr<ParsedExpression> Transformer::TransformBoolExpr(PGBoolExpr *root) {
 			}
 			break;
 		}
-		case PG_NOT_EXPR: {
+		case duckdb_libpgquery::PG_NOT_EXPR: {
 			if (next->type == ExpressionType::COMPARE_IN) {
 				// convert COMPARE_IN to COMPARE_NOT_IN
 				next->type = ExpressionType::COMPARE_NOT_IN;
@@ -47,3 +46,5 @@ unique_ptr<ParsedExpression> Transformer::TransformBoolExpr(PGBoolExpr *root) {
 	}
 	return result;
 }
+
+} // namespace duckdb

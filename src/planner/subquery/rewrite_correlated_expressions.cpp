@@ -7,8 +7,7 @@
 #include "duckdb/planner/expression/bound_subquery_expression.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
 RewriteCorrelatedExpressions::RewriteCorrelatedExpressions(ColumnBinding base_binding,
                                                            column_binding_map_t<idx_t> &correlated_map)
@@ -26,9 +25,11 @@ unique_ptr<Expression> RewriteCorrelatedExpressions::VisitReplace(BoundColumnRef
 	}
 	// correlated column reference
 	// replace with the entry referring to the duplicate eliminated scan
-	assert(expr.depth == 1);
+	// if this assertion occurs it generally means the correlated expressions were not propagated correctly
+	// through different binders
+	D_ASSERT(expr.depth == 1);
 	auto entry = correlated_map.find(expr.binding);
-	assert(entry != correlated_map.end());
+	D_ASSERT(entry != correlated_map.end());
 
 	expr.binding = ColumnBinding(base_binding.table_index, base_binding.column_index + entry->second);
 	expr.depth = 0;
@@ -80,13 +81,12 @@ void RewriteCorrelatedExpressions::RewriteCorrelatedRecursive::RewriteCorrelated
 		if (entry != correlated_map.end()) {
 			// we found the column in the correlated map!
 			// update the binding and reduce the depth by 1
-
 			bound_colref.binding = ColumnBinding(base_binding.table_index, base_binding.column_index + entry->second);
 			bound_colref.depth--;
 		}
 	} else if (child.type == ExpressionType::SUBQUERY) {
 		// we encountered another subquery: rewrite recursively
-		assert(child.GetExpressionClass() == ExpressionClass::BOUND_SUBQUERY);
+		D_ASSERT(child.GetExpressionClass() == ExpressionClass::BOUND_SUBQUERY);
 		auto &bound_subquery = (BoundSubqueryExpression &)child;
 		RewriteCorrelatedRecursive rewrite(bound_subquery, base_binding, correlated_map);
 		rewrite.RewriteCorrelatedSubquery(bound_subquery);
@@ -103,7 +103,7 @@ unique_ptr<Expression> RewriteCountAggregates::VisitReplace(BoundColumnRefExpres
 	if (entry != replacement_map.end()) {
 		// reference to a COUNT(*) aggregate
 		// replace this with CASE WHEN COUNT(*) IS NULL THEN 0 ELSE COUNT(*) END
-		auto is_null = make_unique<BoundOperatorExpression>(ExpressionType::OPERATOR_IS_NULL, TypeId::BOOL);
+		auto is_null = make_unique<BoundOperatorExpression>(ExpressionType::OPERATOR_IS_NULL, LogicalType::BOOLEAN);
 		is_null->children.push_back(expr.Copy());
 		auto check = move(is_null);
 		auto result_if_true = make_unique<BoundConstantExpression>(Value::Numeric(expr.return_type, 0));
@@ -112,3 +112,5 @@ unique_ptr<Expression> RewriteCountAggregates::VisitReplace(BoundColumnRefExpres
 	}
 	return nullptr;
 }
+
+} // namespace duckdb

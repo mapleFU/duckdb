@@ -6,12 +6,14 @@
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/expression_binder.hpp"
+#include "duckdb/planner/binder.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
-BindResult ExpressionBinder::BindExpression(FunctionExpression &function, idx_t depth) {
+BindResult ExpressionBinder::BindExpression(FunctionExpression &function, idx_t depth,
+                                            unique_ptr<ParsedExpression> *expr_ptr) {
 	// lookup the function in the catalog
+	QueryErrorContext error_context(binder.root_statement, function.query_location);
 
 	if (function.function_name == "unnest" || function.function_name == "unlist") {
 		// special case, not in catalog
@@ -19,13 +21,17 @@ BindResult ExpressionBinder::BindExpression(FunctionExpression &function, idx_t 
 		// have unnest live in catalog, too
 		return BindUnnest(function, depth);
 	}
-
-	auto func = Catalog::GetCatalog(context).GetEntry(context, CatalogType::SCALAR_FUNCTION, function.schema,
-	                                                  function.function_name);
-	if (func->type == CatalogType::SCALAR_FUNCTION) {
+	auto &catalog = Catalog::GetCatalog(context);
+	auto func = catalog.GetEntry(context, CatalogType::SCALAR_FUNCTION_ENTRY, function.schema, function.function_name,
+	                             false, error_context);
+	switch (func->type) {
+	case CatalogType::SCALAR_FUNCTION_ENTRY:
 		// scalar function
 		return BindFunction(function, (ScalarFunctionCatalogEntry *)func, depth);
-	} else {
+	case CatalogType::MACRO_ENTRY:
+		// macro function
+		return BindMacro(function, (MacroCatalogEntry *)func, depth, expr_ptr);
+	default:
 		// aggregate function
 		return BindAggregate(function, (AggregateFunctionCatalogEntry *)func, depth);
 	}
@@ -42,42 +48,26 @@ BindResult ExpressionBinder::BindFunction(FunctionExpression &function, ScalarFu
 	}
 	// all children bound successfully
 	// extract the children and types
-	vector<SQLType> arguments;
 	vector<unique_ptr<Expression>> children;
 	for (idx_t i = 0; i < function.children.size(); i++) {
 		auto &child = (BoundExpression &)*function.children[i];
-		arguments.push_back(child.sql_type);
 		children.push_back(move(child.expr));
 	}
-	// special binder-only functions
-	// FIXME: these shouldn't be special
-	if (function.function_name == "alias") {
-		if (arguments.size() != 1) {
-			throw BinderException("alias function expects a single argument");
-		}
-		// alias function: returns the alias of the current expression, or the name of the child
-		string alias = !function.alias.empty() ? function.alias : children[0]->GetName();
-		return BindResult(make_unique<BoundConstantExpression>(Value(alias)), SQLType::VARCHAR);
-	} else if (function.function_name == "typeof") {
-		if (arguments.size() != 1) {
-			throw BinderException("typeof function expects a single argument");
-		}
-		// typeof function: returns the type of the child expression
-		string type = SQLTypeToString(arguments[0]);
-		return BindResult(make_unique<BoundConstantExpression>(Value(type)), SQLType::VARCHAR);
+	unique_ptr<Expression> result =
+	    ScalarFunction::BindScalarFunction(context, *func, move(children), error, function.is_operator);
+	if (!result) {
+		throw BinderException(binder.FormatError(function, error));
 	}
-	auto result = ScalarFunction::BindScalarFunction(context, *func, arguments, move(children), function.is_operator);
-	auto sql_return_type = result->sql_return_type;
-	return BindResult(move(result), sql_return_type);
+	return BindResult(move(result));
 }
 
 BindResult ExpressionBinder::BindAggregate(FunctionExpression &expr, AggregateFunctionCatalogEntry *function,
                                            idx_t depth) {
-	return BindResult(UnsupportedAggregateMessage());
+	return BindResult(binder.FormatError(expr, UnsupportedAggregateMessage()));
 }
 
 BindResult ExpressionBinder::BindUnnest(FunctionExpression &expr, idx_t depth) {
-	return BindResult(UnsupportedUnnestMessage());
+	return BindResult(binder.FormatError(expr, UnsupportedUnnestMessage()));
 }
 
 string ExpressionBinder::UnsupportedAggregateMessage() {
@@ -87,3 +77,5 @@ string ExpressionBinder::UnsupportedAggregateMessage() {
 string ExpressionBinder::UnsupportedUnnestMessage() {
 	return "UNNEST not supported here";
 }
+
+} // namespace duckdb

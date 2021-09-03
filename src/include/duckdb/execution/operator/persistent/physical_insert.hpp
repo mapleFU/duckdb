@@ -15,10 +15,10 @@ namespace duckdb {
 //! Physically insert a set of data into a table
 class PhysicalInsert : public PhysicalSink {
 public:
-	PhysicalInsert(vector<TypeId> types, TableCatalogEntry *table, vector<idx_t> column_index_map,
-	               vector<unique_ptr<Expression>> bound_defaults)
-	    : PhysicalSink(PhysicalOperatorType::INSERT, move(types)), column_index_map(column_index_map), table(table),
-	      bound_defaults(move(bound_defaults)) {
+	PhysicalInsert(vector<LogicalType> types, TableCatalogEntry *table, vector<idx_t> column_index_map,
+	               vector<unique_ptr<Expression>> bound_defaults, idx_t estimated_cardinality)
+	    : PhysicalSink(PhysicalOperatorType::INSERT, move(types), estimated_cardinality),
+	      column_index_map(std::move(column_index_map)), table(table), bound_defaults(move(bound_defaults)) {
 	}
 
 	vector<idx_t> column_index_map;
@@ -27,10 +27,12 @@ public:
 
 public:
 	unique_ptr<GlobalOperatorState> GetGlobalState(ClientContext &context) override;
+	void Combine(ExecutionContext &context, GlobalOperatorState &gstate, LocalSinkState &lstate) override;
 	unique_ptr<LocalSinkState> GetLocalSinkState(ExecutionContext &context) override;
-	void Sink(ExecutionContext &context, GlobalOperatorState &state, LocalSinkState &lstate, DataChunk &input) override;
+	void Sink(ExecutionContext &context, GlobalOperatorState &state, LocalSinkState &lstate,
+	          DataChunk &input) const override;
 
-	void GetChunkInternal(ExecutionContext &context, DataChunk &chunk, PhysicalOperatorState *state) override;
+	void GetChunkInternal(ExecutionContext &context, DataChunk &chunk, PhysicalOperatorState *state) const override;
 };
 
 } // namespace duckdb

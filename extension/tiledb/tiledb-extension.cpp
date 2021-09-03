@@ -27,37 +27,40 @@ struct TileDBScanFunctionData : public TableFunctionData {
 	tiledb::Context ctx;
 	unique_ptr<tiledb::Array> array;
 	unique_ptr<tiledb::Query> query;
-	vector<SQLType> sql_types;
+	vector<LogicalType> sql_types;
 	vector<string> names;
 };
 
 class TileDBScanFunction : public TableFunction {
 public:
-	TileDBScanFunction() : TableFunction("tiledb_scan", {SQLType::VARCHAR}, tiledb_bind, tiledb_scan, nullptr){};
+	TileDBScanFunction() : TableFunction("tiledb_scan", {LogicalType::VARCHAR}, tiledb_scan, tiledb_bind){};
 
 private:
-	static SQLType type_from_tiledb(tiledb_datatype_t t) {
+	static LogicalType type_from_tiledb(tiledb_datatype_t t) {
 		switch (t) {
 			// TODO add more types here
 		case TILEDB_INT8:
-			return SQLType::TINYINT;
+			return LogicalType::TINYINT;
 		case TILEDB_INT16:
-			return SQLType::SMALLINT;
+			return LogicalType::SMALLINT;
 		case TILEDB_INT32:
-			return SQLType::INTEGER;
+			return LogicalType::INTEGER;
 		case TILEDB_INT64:
-			return SQLType::BIGINT;
+			return LogicalType::BIGINT;
 		case TILEDB_FLOAT32:
-			return SQLType::FLOAT;
+			return LogicalType::FLOAT;
 		case TILEDB_FLOAT64:
-			return SQLType::DOUBLE;
+			return LogicalType::DOUBLE;
 		default:
 			throw NotImplementedException("Unsupported TileDB Datatype");
 		}
 	}
 
-	static unique_ptr<FunctionData> tiledb_bind(ClientContext &context, vector<Value> inputs,
-	                                            vector<SQLType> &return_types, vector<string> &names) {
+	static unique_ptr<FunctionData> tiledb_bind(ClientContext &context, vector<Value> &inputs,
+		unordered_map<string, Value> &named_parameters,
+		vector<LogicalType> &input_table_types,
+		vector<string> &input_table_names,
+		vector<LogicalType> &return_types, vector<string> &names) {
 
 		auto file_name = inputs[0].GetValue<string>();
 		auto res = make_unique<TileDBScanFunctionData>();
@@ -102,8 +105,11 @@ private:
 		return move(res);
 	}
 
-	static void tiledb_scan(ClientContext &context, vector<Value> &input, DataChunk &output, FunctionData *dataptr) {
-		auto &data = *((TileDBScanFunctionData *)dataptr);
+	static void tiledb_scan(ClientContext &context, const FunctionData *bind_data,
+		FunctionOperatorData *operator_state, DataChunk *input, DataChunk &output) {
+
+
+		auto &data = *((TileDBScanFunctionData *)bind_data);
 		if (data.finished) {
 			return;
 		}
@@ -111,13 +117,13 @@ private:
 		// this already removes columns that are not used in a query (column projection pushdown)
 		idx_t out_idx = 0;
 		for (auto col_idx : data.column_ids) {
-			switch (data.sql_types[col_idx].id) {
-			case SQLTypeId::INTEGER:
+			switch (data.sql_types[col_idx].id()) {
+			case LogicalTypeId::INTEGER:
 				data.query->set_buffer(data.names[col_idx], FlatVector::GetData<int32_t>(output.data[out_idx]),
 				                       STANDARD_VECTOR_SIZE);
 				break;
 			default:
-				throw NotImplementedException(SQLTypeToString(data.sql_types[col_idx]));
+				throw NotImplementedException(data.sql_types[col_idx].ToString());
 			}
 			out_idx++;
 		}
@@ -140,12 +146,12 @@ private:
 
 void TileDBExtension::Load(DuckDB &db) {
 	TileDBScanFunction scan_fun;
-	CreateTableFunctionInfo cinfo(scan_fun, true);
+	CreateTableFunctionInfo cinfo(scan_fun);
 	cinfo.name = "tiledb_scan";
 
 	Connection conn(db);
 	conn.context->transaction.BeginTransaction();
-	db.catalog->CreateTableFunction(*conn.context, &cinfo);
+	db.instance->GetCatalog().CreateTableFunction(*conn.context, &cinfo);
 
 	conn.context->transaction.Commit();
 }

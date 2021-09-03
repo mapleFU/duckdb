@@ -3,13 +3,12 @@
 #include "test_helpers.hpp"
 
 #include <atomic>
-#include <random>
 #include <thread>
 
 using namespace duckdb;
 using namespace std;
 
-static constexpr int CONCURRENT_APPEND_THREAD_COUNT = 100;
+static constexpr int CONCURRENT_APPEND_THREAD_COUNT = 10;
 static constexpr int CONCURRENT_APPEND_INSERT_ELEMENTS = 1000;
 
 TEST_CASE("Sequential append", "[interquery][.]") {
@@ -17,6 +16,12 @@ TEST_CASE("Sequential append", "[interquery][.]") {
 	DuckDB db(nullptr);
 	Connection con(db);
 	vector<unique_ptr<Connection>> connections;
+
+	// enable detailed profiling
+	con.Query("PRAGMA enable_profiling");
+	auto detailed_profiling_output = TestCreatePath("detailed_profiling_output");
+	con.Query("PRAGMA profiling_output='" + detailed_profiling_output + "'");
+	con.Query("PRAGMA profiling_mode = detailed");
 
 	// initialize the database
 	REQUIRE_NO_FAIL(con.Query("CREATE TABLE integers(i INTEGER);"));
@@ -28,13 +33,13 @@ TEST_CASE("Sequential append", "[interquery][.]") {
 
 	for (size_t i = 0; i < CONCURRENT_APPEND_THREAD_COUNT; i++) {
 		result = connections[i]->Query("SELECT COUNT(*) FROM integers");
-		assert(result->collection.count > 0);
-		Value count = result->collection.chunks[0]->GetValue(0, 0);
+		D_ASSERT(result->collection.Count() > 0);
+		Value count = result->collection.GetValue(0, 0);
 		REQUIRE(count == 0);
 		for (size_t j = 0; j < CONCURRENT_APPEND_INSERT_ELEMENTS; j++) {
 			connections[i]->Query("INSERT INTO integers VALUES (3)");
 			result = connections[i]->Query("SELECT COUNT(*) FROM integers");
-			Value new_count = result->collection.chunks[0]->GetValue(0, 0);
+			Value new_count = result->collection.GetValue(0, 0);
 			REQUIRE(new_count == j + 1);
 			count = new_count;
 		}
@@ -44,7 +49,7 @@ TEST_CASE("Sequential append", "[interquery][.]") {
 		connections[i]->Query("COMMIT;");
 	}
 	result = con.Query("SELECT COUNT(*) FROM integers");
-	Value count = result->collection.chunks[0]->GetValue(0, 0);
+	Value count = result->collection.GetValue(0, 0);
 	REQUIRE(count == CONCURRENT_APPEND_THREAD_COUNT * CONCURRENT_APPEND_INSERT_ELEMENTS);
 }
 
@@ -56,13 +61,13 @@ static void insert_random_elements(DuckDB *db, bool *correct, int threadnr) {
 	// initial count
 	con.Query("BEGIN TRANSACTION;");
 	auto result = con.Query("SELECT COUNT(*) FROM integers");
-	Value count = result->collection.chunks[0]->GetValue(0, 0);
+	Value count = result->collection.GetValue(0, 0);
 	auto start_count = count.GetValue<int64_t>();
 	for (size_t i = 0; i < CONCURRENT_APPEND_INSERT_ELEMENTS; i++) {
 		// count should increase by one for every append we do
 		con.Query("INSERT INTO integers VALUES (3)");
 		result = con.Query("SELECT COUNT(*) FROM integers");
-		Value new_count = result->collection.chunks[0]->GetValue(0, 0);
+		Value new_count = result->collection.GetValue(0, 0);
 		if (new_count != start_count + i + 1) {
 			correct[threadnr] = false;
 		}
@@ -78,6 +83,12 @@ TEST_CASE("Concurrent append", "[interquery][.]") {
 	unique_ptr<QueryResult> result;
 	DuckDB db(nullptr);
 	Connection con(db);
+
+	// enable detailed profiling
+	con.Query("PRAGMA enable_profiling");
+	auto detailed_profiling_output = TestCreatePath("detailed_profiling_output");
+	con.Query("PRAGMA profiling_output='" + detailed_profiling_output + "'");
+	con.Query("PRAGMA profiling_mode = detailed");
 
 	// initialize the database
 	REQUIRE_NO_FAIL(con.Query("CREATE TABLE integers(i INTEGER);"));
@@ -96,7 +107,8 @@ TEST_CASE("Concurrent append", "[interquery][.]") {
 	}
 
 	result = con.Query("SELECT COUNT(*), SUM(i) FROM integers");
-	REQUIRE(CHECK_COLUMN(result, 0, {Value::BIGINT(CONCURRENT_APPEND_THREAD_COUNT * CONCURRENT_APPEND_INSERT_ELEMENTS)}));
-	REQUIRE(CHECK_COLUMN(result, 1, {Value::BIGINT(3 * CONCURRENT_APPEND_THREAD_COUNT * CONCURRENT_APPEND_INSERT_ELEMENTS)}));
+	REQUIRE(
+	    CHECK_COLUMN(result, 0, {Value::BIGINT(CONCURRENT_APPEND_THREAD_COUNT * CONCURRENT_APPEND_INSERT_ELEMENTS)}));
+	REQUIRE(CHECK_COLUMN(result, 1,
+	                     {Value::BIGINT(3 * CONCURRENT_APPEND_THREAD_COUNT * CONCURRENT_APPEND_INSERT_ELEMENTS)}));
 }
-

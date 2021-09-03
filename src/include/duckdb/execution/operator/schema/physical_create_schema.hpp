@@ -16,14 +16,15 @@ namespace duckdb {
 //! PhysicalCreateSchema represents a CREATE SCHEMA command
 class PhysicalCreateSchema : public PhysicalOperator {
 public:
-	PhysicalCreateSchema(unique_ptr<CreateSchemaInfo> info)
-	    : PhysicalOperator(PhysicalOperatorType::CREATE_SCHEMA, {TypeId::BOOL}), info(move(info)) {
+	explicit PhysicalCreateSchema(unique_ptr<CreateSchemaInfo> info, idx_t estimated_cardinality)
+	    : PhysicalOperator(PhysicalOperatorType::CREATE_SCHEMA, {LogicalType::BIGINT}, estimated_cardinality),
+	      info(move(info)) {
 	}
 
 	unique_ptr<CreateSchemaInfo> info;
 
 public:
-	void GetChunkInternal(ExecutionContext &context, DataChunk &chunk, PhysicalOperatorState *state) override;
+	void GetChunkInternal(ExecutionContext &context, DataChunk &chunk, PhysicalOperatorState *state) const override;
 };
 
 } // namespace duckdb

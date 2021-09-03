@@ -1,45 +1,68 @@
 #include "duckdb/function/scalar/date_functions.hpp"
 
 #include "duckdb/common/exception.hpp"
-#include "duckdb/common/types/date.hpp"
 #include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
-
-using namespace std;
+#include "duckdb/planner/expression/bound_function_expression.hpp"
+#include "duckdb/main/client_context.hpp"
+#include "duckdb/transaction/transaction.hpp"
 
 namespace duckdb {
 
-static void current_time_function(DataChunk &input, ExpressionState &state, Vector &result) {
-	assert(input.column_count() == 0);
+struct CurrentBindData : public FunctionData {
+	ClientContext &context;
 
-	auto val = Value::INTEGER(Timestamp::GetTime(Timestamp::GetCurrentTimestamp()));
+	explicit CurrentBindData(ClientContext &context) : context(context) {
+	}
+
+	unique_ptr<FunctionData> Copy() override {
+		return make_unique<CurrentBindData>(context);
+	}
+};
+
+static timestamp_t GetTransactionTimestamp(ExpressionState &state) {
+	auto &func_expr = (BoundFunctionExpression &)state.expr;
+	auto &info = (CurrentBindData &)*func_expr.bind_info;
+	return info.context.ActiveTransaction().start_timestamp;
+}
+
+static void CurrentTimeFunction(DataChunk &input, ExpressionState &state, Vector &result) {
+	D_ASSERT(input.ColumnCount() == 0);
+
+	auto val = Value::TIME(Timestamp::GetTime(GetTransactionTimestamp(state)));
 	result.Reference(val);
 }
 
-static void current_date_function(DataChunk &input, ExpressionState &state, Vector &result) {
-	assert(input.column_count() == 0);
+static void CurrentDateFunction(DataChunk &input, ExpressionState &state, Vector &result) {
+	D_ASSERT(input.ColumnCount() == 0);
 
-	auto val = Value::INTEGER(Timestamp::GetDate(Timestamp::GetCurrentTimestamp()));
+	auto val = Value::DATE(Timestamp::GetDate(GetTransactionTimestamp(state)));
 	result.Reference(val);
 }
 
-static void current_timestamp_function(DataChunk &input, ExpressionState &state, Vector &result) {
-	assert(input.column_count() == 0);
+static void CurrentTimestampFunction(DataChunk &input, ExpressionState &state, Vector &result) {
+	D_ASSERT(input.ColumnCount() == 0);
 
-	auto val = Value::TIMESTAMP(Timestamp::GetCurrentTimestamp());
+	auto val = Value::TIMESTAMP(GetTransactionTimestamp(state));
 	result.Reference(val);
+}
+
+unique_ptr<FunctionData> BindCurrentTime(ClientContext &context, ScalarFunction &bound_function,
+                                         vector<unique_ptr<Expression>> &arguments) {
+	return make_unique<CurrentBindData>(context);
 }
 
 void CurrentTimeFun::RegisterFunction(BuiltinFunctions &set) {
-	set.AddFunction(ScalarFunction("current_time", {}, SQLType::TIME, current_time_function));
+	set.AddFunction(ScalarFunction("current_time", {}, LogicalType::TIME, CurrentTimeFunction, false, BindCurrentTime));
 }
 
 void CurrentDateFun::RegisterFunction(BuiltinFunctions &set) {
-	set.AddFunction(ScalarFunction("current_date", {}, SQLType::DATE, current_date_function));
+	set.AddFunction(ScalarFunction("current_date", {}, LogicalType::DATE, CurrentDateFunction, false, BindCurrentTime));
 }
 
 void CurrentTimestampFun::RegisterFunction(BuiltinFunctions &set) {
-	set.AddFunction({"now", "current_timestamp"}, ScalarFunction({}, SQLType::TIMESTAMP, current_timestamp_function));
+	set.AddFunction({"now", "current_timestamp"},
+	                ScalarFunction({}, LogicalType::TIMESTAMP, CurrentTimestampFunction, false, BindCurrentTime));
 }
 
 } // namespace duckdb

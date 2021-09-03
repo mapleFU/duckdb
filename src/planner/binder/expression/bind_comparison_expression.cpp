@@ -1,5 +1,6 @@
 #include "duckdb/parser/expression/comparison_expression.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
+#include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/expression_binder.hpp"
@@ -8,18 +9,21 @@
 
 #include "duckdb/function/scalar/string_functions.hpp"
 
+#include "duckdb/common/types/decimal.hpp"
+
 #include "duckdb/main/config.hpp"
 #include "duckdb/catalog/catalog.hpp"
-
-using namespace std;
 
 namespace duckdb {
 
 unique_ptr<Expression> ExpressionBinder::PushCollation(ClientContext &context, unique_ptr<Expression> source,
-                                                       string collation, bool equality_only) {
+                                                       const string &collation_p, bool equality_only) {
 	// replace default collation with system collation
-	if (collation.empty()) {
+	string collation;
+	if (collation_p.empty()) {
 		collation = DBConfig::GetConfig(context).collation;
+	} else {
+		collation = collation_p;
 	}
 	// bind the collation
 	if (collation.empty() || collation == "binary" || collation == "c" || collation == "posix") {
@@ -34,9 +38,9 @@ unique_ptr<Expression> ExpressionBinder::PushCollation(ClientContext &context, u
 		if (collation_entry->combinable) {
 			entries.insert(entries.begin(), collation_entry);
 		} else {
-			if (entries.size() > 0 && !entries.back()->combinable) {
-				throw BinderException("Cannot combine collation types \"%s\" and \"%s\"", entries.back()->name.c_str(),
-				                      collation_entry->name.c_str());
+			if (!entries.empty() && !entries.back()->combinable) {
+				throw BinderException("Cannot combine collation types \"%s\" and \"%s\"", entries.back()->name,
+				                      collation_entry->name);
 			}
 			entries.push_back(collation_entry);
 		}
@@ -45,14 +49,64 @@ unique_ptr<Expression> ExpressionBinder::PushCollation(ClientContext &context, u
 		if (equality_only && collation_entry->not_required_for_equality) {
 			continue;
 		}
-		auto function = make_unique<BoundFunctionExpression>(TypeId::VARCHAR, collation_entry->function);
-		function->children.push_back(move(source));
-		if (collation_entry->function.bind) {
-			function->bind_info = collation_entry->function.bind(*function, context);
-		}
+		vector<unique_ptr<Expression>> children;
+		children.push_back(move(source));
+		auto function = ScalarFunction::BindScalarFunction(context, collation_entry->function, move(children));
 		source = move(function);
 	}
 	return source;
+}
+
+void ExpressionBinder::TestCollation(ClientContext &context, const string &collation) {
+	PushCollation(context, make_unique<BoundConstantExpression>(Value("")), collation);
+}
+
+LogicalType BoundComparisonExpression::BindComparison(LogicalType left_type, LogicalType right_type) {
+	auto result_type = LogicalType::MaxLogicalType(left_type, right_type);
+	switch (result_type.id()) {
+	case LogicalTypeId::DECIMAL: {
+		// result is a decimal: we need the maximum width and the maximum scale over width
+		vector<LogicalType> argument_types = {left_type, right_type};
+		uint8_t max_width = 0, max_scale = 0, max_width_over_scale = 0;
+		for (idx_t i = 0; i < argument_types.size(); i++) {
+			uint8_t width, scale;
+			auto can_convert = argument_types[i].GetDecimalProperties(width, scale);
+			if (!can_convert) {
+				return result_type;
+			}
+			max_width = MaxValue<uint8_t>(width, max_width);
+			max_scale = MaxValue<uint8_t>(scale, max_scale);
+			max_width_over_scale = MaxValue<uint8_t>(width - scale, max_width_over_scale);
+		}
+		max_width = MaxValue<uint8_t>(max_scale + max_width_over_scale, max_width);
+		if (max_width > Decimal::MAX_WIDTH_DECIMAL) {
+			// target width does not fit in decimal: truncate the scale (if possible) to try and make it fit
+			max_width = Decimal::MAX_WIDTH_DECIMAL;
+		}
+		return LogicalType::DECIMAL(max_width, max_scale);
+	}
+	case LogicalTypeId::VARCHAR:
+		// for comparison with strings, we prefer to bind to the numeric types
+		if (left_type.IsNumeric() || left_type.id() == LogicalTypeId::BOOLEAN) {
+			return left_type;
+		} else if (right_type.IsNumeric() || right_type.id() == LogicalTypeId::BOOLEAN) {
+			return right_type;
+		} else {
+			// else: check if collations are compatible
+			auto left_collation = StringType::GetCollation(left_type);
+			auto right_collation = StringType::GetCollation(right_type);
+			if (!left_collation.empty() && !right_collation.empty() && left_collation != right_collation) {
+				throw BinderException("Cannot combine types with different collation!");
+			}
+		}
+		return result_type;
+	case LogicalTypeId::UNKNOWN:
+		// comparing two prepared statement parameters (e.g. SELECT ?=?)
+		// default to VARCHAR
+		return LogicalType::VARCHAR;
+	default:
+		return result_type;
+	}
 }
 
 BindResult ExpressionBinder::BindExpression(ComparisonExpression &expr, idx_t depth) {
@@ -66,39 +120,22 @@ BindResult ExpressionBinder::BindExpression(ComparisonExpression &expr, idx_t de
 	// the children have been successfully resolved
 	auto &left = (BoundExpression &)*expr.left;
 	auto &right = (BoundExpression &)*expr.right;
+	auto left_sql_type = left.expr->return_type;
+	auto right_sql_type = right.expr->return_type;
 	// cast the input types to the same type
 	// now obtain the result type of the input types
-	auto input_type = MaxSQLType(left.sql_type, right.sql_type);
-	if (input_type.id == SQLTypeId::VARCHAR) {
-		// for comparison with strings, we prefer to bind to the numeric types
-		if (left.sql_type.IsNumeric()) {
-			input_type = left.sql_type;
-		} else if (right.sql_type.IsNumeric()) {
-			input_type = right.sql_type;
-		} else {
-			// else: check if collations are compatible
-			if (!left.sql_type.collation.empty() && !right.sql_type.collation.empty() &&
-			    left.sql_type.collation != right.sql_type.collation) {
-				throw BinderException("Cannot combine types with different collation!");
-			}
-		}
-	}
-	if (input_type.id == SQLTypeId::UNKNOWN) {
-		throw BinderException("Could not determine type of parameters: try adding explicit type casts");
-	}
+	auto input_type = BoundComparisonExpression::BindComparison(left_sql_type, right_sql_type);
 	// add casts (if necessary)
-	left.expr = BoundCastExpression::AddCastToType(move(left.expr), left.sql_type, input_type);
-	right.expr = BoundCastExpression::AddCastToType(move(right.expr), right.sql_type, input_type);
-	if (input_type.id == SQLTypeId::VARCHAR) {
+	left.expr = BoundCastExpression::AddCastToType(move(left.expr), input_type);
+	right.expr = BoundCastExpression::AddCastToType(move(right.expr), input_type);
+	if (input_type.id() == LogicalTypeId::VARCHAR) {
 		// handle collation
-		left.expr =
-		    PushCollation(context, move(left.expr), input_type.collation, expr.type == ExpressionType::COMPARE_EQUAL);
-		right.expr =
-		    PushCollation(context, move(right.expr), input_type.collation, expr.type == ExpressionType::COMPARE_EQUAL);
+		auto collation = StringType::GetCollation(input_type);
+		left.expr = PushCollation(context, move(left.expr), collation, expr.type == ExpressionType::COMPARE_EQUAL);
+		right.expr = PushCollation(context, move(right.expr), collation, expr.type == ExpressionType::COMPARE_EQUAL);
 	}
 	// now create the bound comparison expression
-	return BindResult(make_unique<BoundComparisonExpression>(expr.type, move(left.expr), move(right.expr)),
-	                  SQLType(SQLTypeId::BOOLEAN));
+	return BindResult(make_unique<BoundComparisonExpression>(expr.type, move(left.expr), move(right.expr)));
 }
 
 } // namespace duckdb

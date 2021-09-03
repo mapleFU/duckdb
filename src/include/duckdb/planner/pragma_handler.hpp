@@ -9,25 +9,29 @@
 #pragma once
 
 #include "duckdb/common/common.hpp"
+#include "duckdb/common/vector.hpp"
+#include "duckdb/parser/statement/pragma_statement.hpp"
 
 namespace duckdb {
 class ClientContext;
+class ClientContextLock;
 class SQLStatement;
 struct PragmaInfo;
 
-//! Pragma handler is responsible for handling PRAGMA statements
+//! Pragma handler is responsible for converting certain pragma statements into new queries
 class PragmaHandler {
 public:
-	PragmaHandler(ClientContext &context);
+	explicit PragmaHandler(ClientContext &context);
 
-public:
-	//! Handles a pragma statement, (potentially) returning a new statement to replace the current one
-	unique_ptr<SQLStatement> HandlePragma(PragmaInfo &pragma);
+	void HandlePragmaStatements(ClientContextLock &lock, vector<unique_ptr<SQLStatement>> &statements);
 
 private:
 	ClientContext &context;
 
 private:
-	void ParseMemoryLimit(string limit);
+	//! Handles a pragma statement, (potentially) returning a new statement to replace the current one
+	string HandlePragma(SQLStatement *statement);
+
+	void HandlePragmaStatementsInternal(vector<unique_ptr<SQLStatement>> &statements);
 };
 } // namespace duckdb

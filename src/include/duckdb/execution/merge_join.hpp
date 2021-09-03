@@ -24,10 +24,10 @@ struct MergeOrder {
 enum MergeInfoType : uint8_t { SCALAR_MERGE_INFO = 1, CHUNK_MERGE_INFO = 2 };
 
 struct MergeInfo {
-	MergeInfo(MergeInfoType info_type, TypeId type) : info_type(info_type), type(type) {
+	MergeInfo(MergeInfoType info_type, LogicalType type) : info_type(info_type), type(type) {
 	}
 	MergeInfoType info_type;
-	TypeId type;
+	LogicalType type;
 };
 
 struct ScalarMergeInfo : public MergeInfo {
@@ -35,7 +35,7 @@ struct ScalarMergeInfo : public MergeInfo {
 	idx_t &pos;
 	SelectionVector result;
 
-	ScalarMergeInfo(MergeOrder &order, TypeId type, idx_t &pos)
+	ScalarMergeInfo(MergeOrder &order, LogicalType type, idx_t &pos)
 	    : MergeInfo(MergeInfoType::SCALAR_MERGE_INFO, type), order(order), pos(pos), result(STANDARD_VECTOR_SIZE) {
 	}
 };
@@ -46,7 +46,7 @@ struct ChunkMergeInfo : public MergeInfo {
 	bool found_match[STANDARD_VECTOR_SIZE];
 
 	ChunkMergeInfo(ChunkCollection &data_chunks, vector<MergeOrder> &order_info)
-	    : MergeInfo(MergeInfoType::CHUNK_MERGE_INFO, data_chunks.types[0]), data_chunks(data_chunks),
+	    : MergeInfo(MergeInfoType::CHUNK_MERGE_INFO, data_chunks.Types()[0]), data_chunks(data_chunks),
 	      order_info(order_info) {
 		memset(found_match, 0, sizeof(found_match));
 	}
@@ -54,18 +54,22 @@ struct ChunkMergeInfo : public MergeInfo {
 
 struct MergeJoinComplex {
 	struct LessThan {
-		template <class T> static idx_t Operation(ScalarMergeInfo &l, ScalarMergeInfo &r);
+		template <class T>
+		static idx_t Operation(ScalarMergeInfo &l, ScalarMergeInfo &r);
 	};
 	struct LessThanEquals {
-		template <class T> static idx_t Operation(ScalarMergeInfo &l, ScalarMergeInfo &r);
+		template <class T>
+		static idx_t Operation(ScalarMergeInfo &l, ScalarMergeInfo &r);
 	};
 	struct GreaterThan {
-		template <class T> static idx_t Operation(ScalarMergeInfo &l, ScalarMergeInfo &r) {
+		template <class T>
+		static idx_t Operation(ScalarMergeInfo &l, ScalarMergeInfo &r) {
 			return LessThan::Operation<T>(r, l);
 		}
 	};
 	struct GreaterThanEquals {
-		template <class T> static idx_t Operation(ScalarMergeInfo &l, ScalarMergeInfo &r) {
+		template <class T>
+		static idx_t Operation(ScalarMergeInfo &l, ScalarMergeInfo &r) {
 			return LessThanEquals::Operation<T>(r, l);
 		}
 	};
@@ -75,16 +79,20 @@ struct MergeJoinComplex {
 
 struct MergeJoinSimple {
 	struct LessThan {
-		template <class T> static idx_t Operation(ScalarMergeInfo &l, ChunkMergeInfo &r);
+		template <class T>
+		static idx_t Operation(ScalarMergeInfo &l, ChunkMergeInfo &r);
 	};
 	struct LessThanEquals {
-		template <class T> static idx_t Operation(ScalarMergeInfo &l, ChunkMergeInfo &r);
+		template <class T>
+		static idx_t Operation(ScalarMergeInfo &l, ChunkMergeInfo &r);
 	};
 	struct GreaterThan {
-		template <class T> static idx_t Operation(ScalarMergeInfo &l, ChunkMergeInfo &r);
+		template <class T>
+		static idx_t Operation(ScalarMergeInfo &l, ChunkMergeInfo &r);
 	};
 	struct GreaterThanEquals {
-		template <class T> static idx_t Operation(ScalarMergeInfo &l, ChunkMergeInfo &r);
+		template <class T>
+		static idx_t Operation(ScalarMergeInfo &l, ChunkMergeInfo &r);
 	};
 
 	static idx_t Perform(MergeInfo &l, MergeInfo &r, ExpressionType comparison);
@@ -95,8 +103,14 @@ struct MergeJoinSimple {
 	template idx_t MJCLASS::OPNAME::Operation<int16_t>(L & l, R & r);                                                  \
 	template idx_t MJCLASS::OPNAME::Operation<int32_t>(L & l, R & r);                                                  \
 	template idx_t MJCLASS::OPNAME::Operation<int64_t>(L & l, R & r);                                                  \
+	template idx_t MJCLASS::OPNAME::Operation<uint8_t>(L & l, R & r);                                                  \
+	template idx_t MJCLASS::OPNAME::Operation<uint16_t>(L & l, R & r);                                                 \
+	template idx_t MJCLASS::OPNAME::Operation<uint32_t>(L & l, R & r);                                                 \
+	template idx_t MJCLASS::OPNAME::Operation<uint64_t>(L & l, R & r);                                                 \
+	template idx_t MJCLASS::OPNAME::Operation<hugeint_t>(L & l, R & r);                                                \
 	template idx_t MJCLASS::OPNAME::Operation<float>(L & l, R & r);                                                    \
 	template idx_t MJCLASS::OPNAME::Operation<double>(L & l, R & r);                                                   \
+	template idx_t MJCLASS::OPNAME::Operation<interval_t>(L & l, R & r);                                               \
 	template idx_t MJCLASS::OPNAME::Operation<string_t>(L & l, R & r);
 
 } // namespace duckdb

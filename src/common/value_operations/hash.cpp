@@ -3,33 +3,58 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/value_operations/value_operations.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
 hash_t ValueOperations::Hash(const Value &op) {
 	if (op.is_null) {
 		return 0;
 	}
-	switch (op.type) {
-	case TypeId::BOOL:
+	switch (op.type().InternalType()) {
+	case PhysicalType::BOOL:
 		return duckdb::Hash(op.value_.boolean);
-	case TypeId::INT8:
+	case PhysicalType::INT8:
 		return duckdb::Hash(op.value_.tinyint);
-	case TypeId::INT16:
+	case PhysicalType::INT16:
 		return duckdb::Hash(op.value_.smallint);
-	case TypeId::INT32:
+	case PhysicalType::INT32:
 		return duckdb::Hash(op.value_.integer);
-	case TypeId::INT64:
+	case PhysicalType::INT64:
 		return duckdb::Hash(op.value_.bigint);
-	case TypeId::FLOAT:
+	case PhysicalType::UINT8:
+		return duckdb::Hash(op.value_.utinyint);
+	case PhysicalType::UINT16:
+		return duckdb::Hash(op.value_.usmallint);
+	case PhysicalType::UINT32:
+		return duckdb::Hash(op.value_.uinteger);
+	case PhysicalType::UINT64:
+		return duckdb::Hash(op.value_.ubigint);
+	case PhysicalType::INT128:
+		return duckdb::Hash(op.value_.hugeint);
+	case PhysicalType::FLOAT:
 		return duckdb::Hash(op.value_.float_);
-	case TypeId::DOUBLE:
+	case PhysicalType::DOUBLE:
 		return duckdb::Hash(op.value_.double_);
-	case TypeId::POINTER:
-		return duckdb::Hash(op.value_.pointer);
-	case TypeId::VARCHAR:
+	case PhysicalType::INTERVAL:
+		return duckdb::Hash(op.value_.interval);
+	case PhysicalType::VARCHAR:
 		return duckdb::Hash(op.str_value.c_str());
+	case PhysicalType::LIST: {
+		hash_t hash = 0;
+		for (auto &entry : op.list_value) {
+			hash ^= ValueOperations::Hash(entry);
+		}
+		return hash;
+	}
+	case PhysicalType::STRUCT: {
+		hash_t hash = 0;
+		for (auto &entry : op.struct_value) {
+			hash ^= ValueOperations::Hash(entry);
+		}
+		return hash;
+	}
 	default:
-		throw NotImplementedException("Unimplemented type for hash");
+		throw InternalException("Unimplemented type for value hash");
 	}
 }
+
+} // namespace duckdb

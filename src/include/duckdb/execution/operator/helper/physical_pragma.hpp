@@ -10,20 +10,25 @@
 
 #include "duckdb/execution/physical_operator.hpp"
 #include "duckdb/parser/parsed_data/pragma_info.hpp"
+#include "duckdb/function/pragma_function.hpp"
 
 namespace duckdb {
 
 //! PhysicalPragma represents the PRAGMA operator
 class PhysicalPragma : public PhysicalOperator {
 public:
-	PhysicalPragma(unique_ptr<PragmaInfo> info)
-	    : PhysicalOperator(PhysicalOperatorType::PRAGMA, {TypeId::BOOL}), info(move(info)) {
+	PhysicalPragma(PragmaFunction function_p, PragmaInfo info_p, idx_t estimated_cardinality)
+	    : PhysicalOperator(PhysicalOperatorType::PRAGMA, {LogicalType::BOOLEAN}, estimated_cardinality),
+	      function(move(function_p)), info(move(info_p)) {
 	}
 
-	unique_ptr<PragmaInfo> info;
+	//! The pragma function to call
+	PragmaFunction function;
+	//! The context of the call
+	PragmaInfo info;
 
 public:
-	void GetChunkInternal(ExecutionContext &context, DataChunk &chunk, PhysicalOperatorState *state) override;
+	void GetChunkInternal(ExecutionContext &context, DataChunk &chunk, PhysicalOperatorState *state) const override;
 };
 
 } // namespace duckdb

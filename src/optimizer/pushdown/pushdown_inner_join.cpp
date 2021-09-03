@@ -4,8 +4,7 @@
 #include "duckdb/planner/operator/logical_cross_product.hpp"
 #include "duckdb/planner/operator/logical_empty_result.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
 using Filter = FilterPushdown::Filter;
 
@@ -13,10 +12,10 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownInnerJoin(unique_ptr<Logical
                                                               unordered_set<idx_t> &left_bindings,
                                                               unordered_set<idx_t> &right_bindings) {
 	auto &join = (LogicalJoin &)*op;
-	assert(join.join_type == JoinType::INNER);
-	assert(op->type != LogicalOperatorType::DELIM_JOIN);
+	D_ASSERT(join.join_type == JoinType::INNER);
+	D_ASSERT(op->type != LogicalOperatorType::LOGICAL_DELIM_JOIN);
 	// inner join: gather all the conditions of the inner join and add to the filter list
-	if (op->type == LogicalOperatorType::ANY_JOIN) {
+	if (op->type == LogicalOperatorType::LOGICAL_ANY_JOIN) {
 		auto &any_join = (LogicalAnyJoin &)join;
 		// any join: only one filter to add
 		if (AddFilter(move(any_join.condition)) == FilterResult::UNSATISFIABLE) {
@@ -25,11 +24,11 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownInnerJoin(unique_ptr<Logical
 		}
 	} else {
 		// comparison join
-		assert(op->type == LogicalOperatorType::COMPARISON_JOIN);
+		D_ASSERT(op->type == LogicalOperatorType::LOGICAL_COMPARISON_JOIN);
 		auto &comp_join = (LogicalComparisonJoin &)join;
 		// turn the conditions into filters
-		for (idx_t i = 0; i < comp_join.conditions.size(); i++) {
-			auto condition = JoinCondition::CreateExpression(move(comp_join.conditions[i]));
+		for (auto &i : comp_join.conditions) {
+			auto condition = JoinCondition::CreateExpression(move(i));
 			if (AddFilter(move(condition)) == FilterResult::UNSATISFIABLE) {
 				// filter statically evaluates to false, strip tree
 				return make_unique<LogicalEmptyResult>(move(op));
@@ -45,3 +44,5 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownInnerJoin(unique_ptr<Logical
 	// then push down cross product
 	return PushdownCrossProduct(move(cross_product));
 }
+
+} // namespace duckdb

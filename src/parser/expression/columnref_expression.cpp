@@ -4,16 +4,15 @@
 #include "duckdb/common/serializer.hpp"
 #include "duckdb/common/types/hash.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
 //! Specify both the column and table name
 ColumnRefExpression::ColumnRefExpression(string column_name, string table_name)
-    : ParsedExpression(ExpressionType::COLUMN_REF, ExpressionClass::COLUMN_REF), column_name(column_name),
-      table_name(table_name) {
+    : ParsedExpression(ExpressionType::COLUMN_REF, ExpressionClass::COLUMN_REF), column_name(move(column_name)),
+      table_name(move(table_name)) {
 }
 
-ColumnRefExpression::ColumnRefExpression(string column_name) : ColumnRefExpression(column_name, string()) {
+ColumnRefExpression::ColumnRefExpression(string column_name) : ColumnRefExpression(move(column_name), string()) {
 }
 
 string ColumnRefExpression::GetName() const {
@@ -56,3 +55,5 @@ unique_ptr<ParsedExpression> ColumnRefExpression::Deserialize(ExpressionType typ
 	auto expression = make_unique<ColumnRefExpression>(column_name, table_name);
 	return move(expression);
 }
+
+} // namespace duckdb

@@ -8,8 +8,6 @@
 #include "duckdb/planner/operator/logical_insert.hpp"
 #include "duckdb/common/string_util.hpp"
 
-using namespace std;
-
 namespace duckdb {
 
 static void CheckInsertColumnCountMismatch(int64_t expected_columns, int64_t result_columns, bool columns_provided,
@@ -26,10 +24,10 @@ static void CheckInsertColumnCountMismatch(int64_t expected_columns, int64_t res
 BoundStatement Binder::Bind(InsertStatement &stmt) {
 	BoundStatement result;
 	result.names = {"Count"};
-	result.types = {SQLType::BIGINT};
+	result.types = {LogicalType::BIGINT};
 
 	auto table = Catalog::GetCatalog(context).GetEntry<TableCatalogEntry>(context, stmt.schema, stmt.table);
-	assert(table);
+	D_ASSERT(table);
 	if (!table->temporary) {
 		// inserting into a non-temporary table: alters underlying database
 		this->read_only = false;
@@ -38,7 +36,7 @@ BoundStatement Binder::Bind(InsertStatement &stmt) {
 	auto insert = make_unique<LogicalInsert>(table);
 
 	vector<idx_t> named_column_map;
-	if (stmt.columns.size() > 0) {
+	if (!stmt.columns.empty()) {
 		// insertion statement specifies column list
 
 		// create a mapping of (list index) -> (column index)
@@ -47,7 +45,7 @@ BoundStatement Binder::Bind(InsertStatement &stmt) {
 			column_name_map[stmt.columns[i]] = i;
 			auto entry = table->name_map.find(stmt.columns[i]);
 			if (entry == table->name_map.end()) {
-				throw BinderException("Column %s not found in table %s", stmt.columns[i].c_str(), table->name.c_str());
+				throw BinderException("Column %s not found in table %s", stmt.columns[i], table->name);
 			}
 			if (entry->second == COLUMN_IDENTIFIER_ROW_ID) {
 				throw BinderException("Cannot explicitly insert values into rowid column");
@@ -79,7 +77,7 @@ BoundStatement Binder::Bind(InsertStatement &stmt) {
 		return result;
 	}
 
-	idx_t expected_columns = stmt.columns.size() == 0 ? table->columns.size() : stmt.columns.size();
+	idx_t expected_columns = stmt.columns.empty() ? table->columns.size() : stmt.columns.size();
 	// special case: check if we are inserting from a VALUES statement
 	if (stmt.select_statement->node->type == QueryNodeType::SELECT_NODE) {
 		auto &node = (SelectNode &)*stmt.select_statement->node;
@@ -88,14 +86,14 @@ BoundStatement Binder::Bind(InsertStatement &stmt) {
 			expr_list.expected_types.resize(expected_columns);
 			expr_list.expected_names.resize(expected_columns);
 
-			assert(expr_list.values.size() > 0);
-			CheckInsertColumnCountMismatch(expected_columns, expr_list.values[0].size(), stmt.columns.size() != 0,
+			D_ASSERT(expr_list.values.size() > 0);
+			CheckInsertColumnCountMismatch(expected_columns, expr_list.values[0].size(), !stmt.columns.empty(),
 			                               table->name.c_str());
 
 			// VALUES list!
 			for (idx_t col_idx = 0; col_idx < expected_columns; col_idx++) {
-				idx_t table_col_idx = stmt.columns.size() == 0 ? col_idx : named_column_map[col_idx];
-				assert(table_col_idx < table->columns.size());
+				idx_t table_col_idx = stmt.columns.empty() ? col_idx : named_column_map[col_idx];
+				D_ASSERT(table_col_idx < table->columns.size());
 
 				// set the expected types as the types for the INSERT statement
 				auto &column = table->columns[table_col_idx];
@@ -109,8 +107,7 @@ BoundStatement Binder::Bind(InsertStatement &stmt) {
 						if (column.default_value) {
 							expr_list.values[list_idx][col_idx] = column.default_value->Copy();
 						} else {
-							expr_list.values[list_idx][col_idx] =
-							    make_unique<ConstantExpression>(column.type, Value(GetInternalType(column.type)));
+							expr_list.values[list_idx][col_idx] = make_unique<ConstantExpression>(Value(column.type));
 						}
 					}
 				}
@@ -121,13 +118,14 @@ BoundStatement Binder::Bind(InsertStatement &stmt) {
 	// insert from select statement
 	// parse select statement and add to logical plan
 	auto root_select = Bind(*stmt.select_statement);
-	CheckInsertColumnCountMismatch(expected_columns, root_select.types.size(), stmt.columns.size() != 0,
+	CheckInsertColumnCountMismatch(expected_columns, root_select.types.size(), !stmt.columns.empty(),
 	                               table->name.c_str());
 
 	auto root = CastLogicalOperatorToTypes(root_select.types, insert->expected_types, move(root_select.plan));
 	insert->AddChild(move(root));
 
 	result.plan = move(insert);
+	this->allow_stream_result = false;
 	return result;
 }
 

@@ -16,6 +16,29 @@ SELECT timestamp '2017-07-23 13:10:11';
 ----
 2017-07-23 13:10:11
 
+# iso timestamps
+query TT
+SELECT timestamp '2017-07-23T13:10:11', timestamp '2017-07-23T13:10:11Z';
+----
+2017-07-23 13:10:11
+2017-07-23 13:10:11
+
+# spaces everywhere
+query T
+SELECT timestamp '    2017-07-23     13:10:11    ';
+----
+2017-07-23 13:10:11
+
+# other trailing, preceding, or middle gunk is not accepted
+statement error
+SELECT timestamp '    2017-07-23     13:10:11    AA';
+
+statement error
+SELECT timestamp 'AA2017-07-23 13:10:11';
+
+statement error
+SELECT timestamp '2017-07-23A13:10:11';
+
 query T
 SELECT t FROM timestamp ORDER BY t;
 ----
@@ -106,15 +129,15 @@ SELECT (DATE '1992-01-01')::TIMESTAMP;
 query T
 SELECT TIMESTAMP '2008-01-01 00:00:01.5'::VARCHAR
 ----
-2008-01-01 00:00:01.500
+2008-01-01 00:00:01.5
 
 query T
 SELECT TIMESTAMP '-8-01-01 00:00:01.5'::VARCHAR
 ----
-0008-01-01 (BC) 00:00:01.500
+0009-01-01 (BC) 00:00:01.5
 
-# FIXME: timestamp with large date
-# query T
-# SELECT TIMESTAMP '100000-01-01 00:00:01.5'::VARCHAR
-# ----
-# 100000-01-01 00:00:01.500
+# timestamp with large date
+query T
+SELECT TIMESTAMP '100000-01-01 00:00:01.5'::VARCHAR
+----
+100000-01-01 00:00:01.5

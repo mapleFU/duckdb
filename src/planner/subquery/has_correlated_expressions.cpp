@@ -5,8 +5,7 @@
 
 #include <algorithm>
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
 HasCorrelatedExpressions::HasCorrelatedExpressions(const vector<CorrelatedColumnInfo> &correlated)
     : has_correlated_expressions(false), correlated_columns(correlated) {
@@ -23,7 +22,7 @@ unique_ptr<Expression> HasCorrelatedExpressions::VisitReplace(BoundColumnRefExpr
 		return nullptr;
 	}
 	// correlated column reference
-	assert(expr.depth == 1);
+	D_ASSERT(expr.depth == 1);
 	has_correlated_expressions = true;
 	return nullptr;
 }
@@ -43,3 +42,5 @@ unique_ptr<Expression> HasCorrelatedExpressions::VisitReplace(BoundSubqueryExpre
 	}
 	return nullptr;
 }
+
+} // namespace duckdb

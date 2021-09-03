@@ -26,9 +26,10 @@ extern "C" {
 #include <mach/mach.h>
 #elif defined(__unix__)
 #include <semaphore.h>
+#include <chrono>
 #endif
 
-namespace moodycamel
+namespace duckdb_moodycamel
 {
 namespace details
 {
@@ -160,8 +161,6 @@ public:
 	}
 };
 #elif defined(__unix__)
-#include <chrono>
-
 //---------------------------------------------------------
 // Semaphore (POSIX, Linux)
 //---------------------------------------------------------
@@ -427,4 +426,4 @@ public:
 	}
 };
 
-}   // end namespace moodycamel
+}   // end namespace duckdb_moodycamel

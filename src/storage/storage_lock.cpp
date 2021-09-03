@@ -2,8 +2,7 @@
 #include "duckdb/common/common.hpp"
 #include "duckdb/common/assert.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
 StorageLockKey::StorageLockKey(StorageLock &lock, StorageLockType type) : lock(lock), type(type) {
 }
@@ -12,7 +11,7 @@ StorageLockKey::~StorageLockKey() {
 	if (type == StorageLockType::EXCLUSIVE) {
 		lock.ReleaseExclusiveLock();
 	} else {
-		assert(type == StorageLockType::SHARED);
+		D_ASSERT(type == StorageLockType::SHARED);
 		lock.ReleaseSharedLock();
 	}
 }
@@ -41,3 +40,5 @@ void StorageLock::ReleaseExclusiveLock() {
 void StorageLock::ReleaseSharedLock() {
 	read_count--;
 }
+
+} // namespace duckdb

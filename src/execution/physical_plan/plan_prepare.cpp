@@ -3,17 +3,17 @@
 #include "duckdb/planner/operator/logical_prepare.hpp"
 #include "duckdb/execution/operator/helper/physical_prepare.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
 unique_ptr<PhysicalOperator> PhysicalPlanGenerator::CreatePlan(LogicalPrepare &op) {
-	assert(op.children.size() == 1);
+	D_ASSERT(op.children.size() == 1);
 
 	// generate physical plan
 	auto plan = CreatePlan(*op.children[0]);
 	op.prepared->types = plan->types;
 	op.prepared->plan = move(plan);
-	op.prepared->dependencies = move(dependencies);
 
-	return make_unique<PhysicalPrepare>(op.name, move(op.prepared));
+	return make_unique<PhysicalPrepare>(op.name, move(op.prepared), op.estimated_cardinality);
 }
+
+} // namespace duckdb

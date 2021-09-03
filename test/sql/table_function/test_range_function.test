@@ -16,9 +16,40 @@ SELECT * FROM range(0, 10, 1)
 8
 9
 
+# generate_series is similar to range, but has inclusive bounds (for postgres compatibility)
+query I
+SELECT * FROM generate_series(0, 10, 1)
+----
+0
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+
 query I
 SELECT * FROM range(10, 0, -1) ORDER BY 1 ASC
 ----
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+
+query I
+SELECT * FROM generate_series(10, 0, -1) ORDER BY 1 ASC
+----
+0
 1
 2
 3
@@ -47,3 +78,58 @@ SELECT * FROM range(0, 10, -1)
 
 statement error
 SELECT * FROM range(10, 0, 1)
+
+# overloads
+# only one parameter defaults to start=0, interval=1
+query I
+SELECT * FROM range(10)
+----
+0
+1
+2
+3
+4
+5
+6
+7
+8
+9
+
+# two parameters defaults to interval=1
+query I
+SELECT * FROM range(0, 10)
+----
+0
+1
+2
+3
+4
+5
+6
+7
+8
+9
+
+query I
+SELECT EXISTS(SELECT * FROM range(10))
+----
+1
+
+query I
+SELECT EXISTS(SELECT * FROM range(0))
+----
+0
+
+query I
+SELECT * FROM range(10) t1(j) WHERE j=3
+----
+3
+
+statement error
+SELECT * FROM range('hello')
+
+statement error
+SELECT * FROM range(10, 'hello')
+
+statement error
+SELECT * FROM range(10, 10, 'hello')

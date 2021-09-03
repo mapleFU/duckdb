@@ -18,24 +18,25 @@ class PhysicalHashAggregate;
 //! PhysicalChunkCollectionScan in the RHS.
 class PhysicalDelimJoin : public PhysicalSink {
 public:
-	PhysicalDelimJoin(vector<TypeId> types, unique_ptr<PhysicalOperator> original_join,
-	                  vector<PhysicalOperator *> delim_scans);
+	PhysicalDelimJoin(vector<LogicalType> types, unique_ptr<PhysicalOperator> original_join,
+	                  vector<PhysicalOperator *> delim_scans, idx_t estimated_cardinality);
 
 	unique_ptr<PhysicalOperator> join;
 	unique_ptr<PhysicalHashAggregate> distinct;
-	ChunkCollection lhs_data;
-	ChunkCollection delim_data;
+	vector<PhysicalOperator *> delim_scans;
 
 public:
 	unique_ptr<GlobalOperatorState> GetGlobalState(ClientContext &context) override;
 	unique_ptr<LocalSinkState> GetLocalSinkState(ExecutionContext &context) override;
-	void Sink(ExecutionContext &context, GlobalOperatorState &state, LocalSinkState &lstate, DataChunk &input) override;
-	void Finalize(ClientContext &context, unique_ptr<GlobalOperatorState> state) override;
+	void Sink(ExecutionContext &context, GlobalOperatorState &state, LocalSinkState &lstate,
+	          DataChunk &input) const override;
+	void Combine(ExecutionContext &context, GlobalOperatorState &state, LocalSinkState &lstate) override;
+	bool Finalize(Pipeline &pipeline, ClientContext &context, unique_ptr<GlobalOperatorState> state) override;
 
-	void GetChunkInternal(ExecutionContext &context, DataChunk &chunk, PhysicalOperatorState *state) override;
+	void GetChunkInternal(ExecutionContext &context, DataChunk &chunk, PhysicalOperatorState *state) const override;
 	unique_ptr<PhysicalOperatorState> GetOperatorState() override;
 
-	string ExtraRenderInformation() const override;
+	string ParamsToString() const override;
 };
 
 } // namespace duckdb

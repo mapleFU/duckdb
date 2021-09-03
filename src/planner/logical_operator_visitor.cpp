@@ -4,8 +4,7 @@
 #include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/planner/operator/list.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
 void LogicalOperatorVisitor::VisitOperator(LogicalOperator &op) {
 	VisitOperatorChildren(op);
@@ -18,71 +17,86 @@ void LogicalOperatorVisitor::VisitOperatorChildren(LogicalOperator &op) {
 	}
 }
 
-void LogicalOperatorVisitor::VisitOperatorExpressions(LogicalOperator &op) {
+void LogicalOperatorVisitor::EnumerateExpressions(LogicalOperator &op,
+                                                  const std::function<void(unique_ptr<Expression> *child)> &callback) {
 	switch (op.type) {
-	case LogicalOperatorType::EXPRESSION_GET: {
+	case LogicalOperatorType::LOGICAL_EXPRESSION_GET: {
 		auto &get = (LogicalExpressionGet &)op;
 		for (auto &expr_list : get.expressions) {
 			for (auto &expr : expr_list) {
-				VisitExpression(&expr);
+				callback(&expr);
 			}
 		}
 		break;
 	}
-	case LogicalOperatorType::ORDER_BY: {
+	case LogicalOperatorType::LOGICAL_ORDER_BY: {
 		auto &order = (LogicalOrder &)op;
 		for (auto &node : order.orders) {
-			VisitExpression(&node.expression);
+			callback(&node.expression);
 		}
 		break;
 	}
-	case LogicalOperatorType::TOP_N: {
+	case LogicalOperatorType::LOGICAL_TOP_N: {
 		auto &order = (LogicalTopN &)op;
 		for (auto &node : order.orders) {
-			VisitExpression(&node.expression);
+			callback(&node.expression);
 		}
 		break;
 	}
-	case LogicalOperatorType::DISTINCT: {
+	case LogicalOperatorType::LOGICAL_DISTINCT: {
 		auto &distinct = (LogicalDistinct &)op;
 		for (auto &target : distinct.distinct_targets) {
-			VisitExpression(&target);
+			callback(&target);
 		}
 		break;
 	}
-	case LogicalOperatorType::DELIM_JOIN:
-	case LogicalOperatorType::COMPARISON_JOIN: {
-		if (op.type == LogicalOperatorType::DELIM_JOIN) {
+	case LogicalOperatorType::LOGICAL_DELIM_JOIN:
+	case LogicalOperatorType::LOGICAL_COMPARISON_JOIN: {
+		if (op.type == LogicalOperatorType::LOGICAL_DELIM_JOIN) {
 			auto &delim_join = (LogicalDelimJoin &)op;
 			for (auto &expr : delim_join.duplicate_eliminated_columns) {
-				VisitExpression(&expr);
+				callback(&expr);
 			}
 		}
 		auto &join = (LogicalComparisonJoin &)op;
 		for (auto &cond : join.conditions) {
-			VisitExpression(&cond.left);
-			VisitExpression(&cond.right);
+			callback(&cond.left);
+			callback(&cond.right);
 		}
 		break;
 	}
-	case LogicalOperatorType::ANY_JOIN: {
+	case LogicalOperatorType::LOGICAL_ANY_JOIN: {
 		auto &join = (LogicalAnyJoin &)op;
-		VisitExpression(&join.condition);
+		callback(&join.condition);
 		break;
 	}
-	case LogicalOperatorType::AGGREGATE_AND_GROUP_BY: {
+	case LogicalOperatorType::LOGICAL_LIMIT: {
+		auto &limit = (LogicalLimit &)op;
+		if (limit.limit) {
+			callback(&limit.limit);
+		}
+		if (limit.offset) {
+			callback(&limit.offset);
+		}
+		break;
+	}
+	case LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY: {
 		auto &aggr = (LogicalAggregate &)op;
-		for (idx_t i = 0; i < aggr.groups.size(); i++) {
-			VisitExpression(&aggr.groups[i]);
+		for (auto &group : aggr.groups) {
+			callback(&group);
 		}
 		break;
 	}
 	default:
 		break;
 	}
-	for (idx_t i = 0; i < op.expressions.size(); i++) {
-		VisitExpression(&op.expressions[i]);
+	for (auto &expression : op.expressions) {
+		callback(&expression);
 	}
+}
+
+void LogicalOperatorVisitor::VisitOperatorExpressions(LogicalOperator &op) {
+	LogicalOperatorVisitor::EnumerateExpressions(op, [&](unique_ptr<Expression> *child) { VisitExpression(child); });
 }
 
 void LogicalOperatorVisitor::VisitExpression(unique_ptr<Expression> *expression) {
@@ -131,9 +145,6 @@ void LogicalOperatorVisitor::VisitExpression(unique_ptr<Expression> *expression)
 	case ExpressionClass::BOUND_DEFAULT:
 		result = VisitReplace((BoundDefaultExpression &)expr, expression);
 		break;
-	case ExpressionClass::COMMON_SUBEXPRESSION:
-		result = VisitReplace((CommonSubExpression &)expr, expression);
-		break;
 	case ExpressionClass::BOUND_WINDOW:
 		result = VisitReplace((BoundWindowExpression &)expr, expression);
 		break;
@@ -141,7 +152,7 @@ void LogicalOperatorVisitor::VisitExpression(unique_ptr<Expression> *expression)
 		result = VisitReplace((BoundUnnestExpression &)expr, expression);
 		break;
 	default:
-		assert(0);
+		throw InternalException("Unrecognized expression type in logical operator visitor");
 	}
 	if (result) {
 		*expression = move(result);
@@ -152,12 +163,12 @@ void LogicalOperatorVisitor::VisitExpression(unique_ptr<Expression> *expression)
 }
 
 void LogicalOperatorVisitor::VisitExpressionChildren(Expression &expr) {
-	ExpressionIterator::EnumerateChildren(expr, [&](unique_ptr<Expression> expr) -> unique_ptr<Expression> {
-		VisitExpression(&expr);
-		return expr;
-	});
+	ExpressionIterator::EnumerateChildren(expr, [&](unique_ptr<Expression> &expr) { VisitExpression(&expr); });
 }
 
+// these are all default methods that can be overriden
+// we don't care about coverage here
+// LCOV_EXCL_START
 unique_ptr<Expression> LogicalOperatorVisitor::VisitReplace(BoundAggregateExpression &expr,
                                                             unique_ptr<Expression> *expr_ptr) {
 	return nullptr;
@@ -238,7 +249,6 @@ unique_ptr<Expression> LogicalOperatorVisitor::VisitReplace(BoundUnnestExpressio
 	return nullptr;
 }
 
-unique_ptr<Expression> LogicalOperatorVisitor::VisitReplace(CommonSubExpression &expr,
-                                                            unique_ptr<Expression> *expr_ptr) {
-	return nullptr;
-}
+// LCOV_EXCL_STOP
+
+} // namespace duckdb

@@ -9,8 +9,8 @@
 #pragma once
 
 #include "duckdb/common/constants.hpp"
+#include "duckdb/common/exception.hpp"
 #include "duckdb/common/vector.hpp"
-#include <stdarg.h> // for va_list
 
 namespace duckdb {
 /**
@@ -21,6 +21,22 @@ namespace duckdb {
  */
 class StringUtil {
 public:
+	static bool CharacterIsSpace(char c) {
+		return c == ' ' || c == '\t' || c == '\n' || c == '\v' || c == '\f' || c == '\r';
+	}
+	static bool CharacterIsNewline(char c) {
+		return c == '\n' || c == '\r';
+	}
+	static bool CharacterIsDigit(char c) {
+		return c >= '0' && c <= '9';
+	}
+	static char CharacterToLower(char c) {
+		if (c >= 'A' && c <= 'Z') {
+			return c - ('A' - 'a');
+		}
+		return c;
+	}
+
 	//! Returns true if the needle string exists in the haystack
 	static bool Contains(const string &haystack, const string &needle);
 
@@ -60,11 +76,8 @@ public:
 		return result;
 	}
 
-	//! Append the prefix to the beginning of each line in str
-	static string Prefix(const string &str, const string &prefix);
-
 	//! Return a string that formats the give number of bytes
-	static string FormatSize(idx_t bytes);
+	static string BytesToHumanReadableString(idx_t bytes);
 
 	//! Convert a string to uppercase
 	static string Upper(const string &str);
@@ -73,8 +86,10 @@ public:
 	static string Lower(const string &str);
 
 	//! Format a string using printf semantics
-	static string Format(const string fmt_str, ...);
-	static string VFormat(const string fmt_str, va_list ap);
+	template <typename... Args>
+	static string Format(const string fmt_str, Args... params) {
+		return Exception::ConstructMessage(fmt_str, params...);
+	}
 
 	//! Split the input string into a vector of strings based on the split string
 	static vector<string> Split(const string &input, const string &split);
@@ -87,5 +102,18 @@ public:
 	static void Trim(string &str);
 
 	static string Replace(string source, const string &from, const string &to);
+
+	//! Get the levenshtein distance from two strings
+	static idx_t LevenshteinDistance(const string &s1, const string &s2);
+
+	//! Get the top-n strings (sorted by the given score distance) from a set of scores.
+	//! At least one entry is returned (if there is one).
+	//! Strings are only returned if they have a score less than the threshold.
+	static vector<string> TopNStrings(vector<std::pair<string, idx_t>> scores, idx_t n = 5, idx_t threshold = 5);
+	//! Computes the levenshtein distance of each string in strings, and compares it to target, then returns TopNStrings
+	//! with the given params.
+	static vector<string> TopNLevenshtein(const vector<string> &strings, const string &target, idx_t n = 5,
+	                                      idx_t threshold = 5);
+	static string CandidatesMessage(const vector<string> &candidates, const string &candidate = "Candidate bindings");
 };
 } // namespace duckdb

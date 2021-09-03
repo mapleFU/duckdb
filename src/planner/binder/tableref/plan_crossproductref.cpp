@@ -2,8 +2,7 @@
 #include "duckdb/planner/operator/logical_cross_product.hpp"
 #include "duckdb/planner/tableref/bound_crossproductref.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
 unique_ptr<LogicalOperator> Binder::CreatePlan(BoundCrossProductRef &expr) {
 	auto cross_product = make_unique<LogicalCrossProduct>();
@@ -16,3 +15,5 @@ unique_ptr<LogicalOperator> Binder::CreatePlan(BoundCrossProductRef &expr) {
 
 	return move(cross_product);
 }
+
+} // namespace duckdb

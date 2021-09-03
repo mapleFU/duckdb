@@ -16,10 +16,14 @@ namespace duckdb {
 
 class DeleteStatement : public SQLStatement {
 public:
-	DeleteStatement() : SQLStatement(StatementType::DELETE_STATEMENT) {
-	}
+	DeleteStatement();
 
 	unique_ptr<ParsedExpression> condition;
 	unique_ptr<TableRef> table;
+	vector<unique_ptr<TableRef>> using_clauses;
+
+public:
+	unique_ptr<SQLStatement> Copy() const override;
 };
+
 } // namespace duckdb

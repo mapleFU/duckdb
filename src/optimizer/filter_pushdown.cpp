@@ -4,37 +4,36 @@
 #include "duckdb/planner/operator/logical_filter.hpp"
 #include "duckdb/planner/operator/logical_join.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
 using Filter = FilterPushdown::Filter;
 
 unique_ptr<LogicalOperator> FilterPushdown::Rewrite(unique_ptr<LogicalOperator> op) {
-	assert(!combiner.HasFilters());
+	D_ASSERT(!combiner.HasFilters());
 	switch (op->type) {
-	case LogicalOperatorType::AGGREGATE_AND_GROUP_BY:
+	case LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY:
 		return PushdownAggregate(move(op));
-	case LogicalOperatorType::FILTER:
+	case LogicalOperatorType::LOGICAL_FILTER:
 		return PushdownFilter(move(op));
-	case LogicalOperatorType::CROSS_PRODUCT:
+	case LogicalOperatorType::LOGICAL_CROSS_PRODUCT:
 		return PushdownCrossProduct(move(op));
-	case LogicalOperatorType::COMPARISON_JOIN:
-	case LogicalOperatorType::ANY_JOIN:
-	case LogicalOperatorType::DELIM_JOIN:
+	case LogicalOperatorType::LOGICAL_COMPARISON_JOIN:
+	case LogicalOperatorType::LOGICAL_ANY_JOIN:
+	case LogicalOperatorType::LOGICAL_DELIM_JOIN:
 		return PushdownJoin(move(op));
-	case LogicalOperatorType::PROJECTION:
+	case LogicalOperatorType::LOGICAL_PROJECTION:
 		return PushdownProjection(move(op));
-	case LogicalOperatorType::INTERSECT:
-	case LogicalOperatorType::EXCEPT:
-	case LogicalOperatorType::UNION:
+	case LogicalOperatorType::LOGICAL_INTERSECT:
+	case LogicalOperatorType::LOGICAL_EXCEPT:
+	case LogicalOperatorType::LOGICAL_UNION:
 		return PushdownSetOperation(move(op));
-	case LogicalOperatorType::DISTINCT:
-	case LogicalOperatorType::ORDER_BY: {
+	case LogicalOperatorType::LOGICAL_DISTINCT:
+	case LogicalOperatorType::LOGICAL_ORDER_BY: {
 		// we can just push directly through these operations without any rewriting
 		op->children[0] = Rewrite(move(op->children[0]));
 		return op;
 	}
-	case LogicalOperatorType::GET:
+	case LogicalOperatorType::LOGICAL_GET:
 		return PushdownGet(move(op));
 	default:
 		return FinishPushdown(move(op));
@@ -42,8 +41,8 @@ unique_ptr<LogicalOperator> FilterPushdown::Rewrite(unique_ptr<LogicalOperator> 
 }
 
 unique_ptr<LogicalOperator> FilterPushdown::PushdownJoin(unique_ptr<LogicalOperator> op) {
-	assert(op->type == LogicalOperatorType::COMPARISON_JOIN || op->type == LogicalOperatorType::ANY_JOIN ||
-	       op->type == LogicalOperatorType::DELIM_JOIN);
+	D_ASSERT(op->type == LogicalOperatorType::LOGICAL_COMPARISON_JOIN ||
+	         op->type == LogicalOperatorType::LOGICAL_ANY_JOIN || op->type == LogicalOperatorType::LOGICAL_DELIM_JOIN);
 	auto &join = (LogicalJoin &)*op;
 	unordered_set<idx_t> left_bindings, right_bindings;
 	LogicalJoin::GetTableReferences(*op->children[0], left_bindings);
@@ -66,10 +65,12 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownJoin(unique_ptr<LogicalOpera
 void FilterPushdown::PushFilters() {
 	for (auto &f : filters) {
 		auto result = combiner.AddFilter(move(f->filter));
-		assert(result == FilterResult::SUCCESS);
+		D_ASSERT(result == FilterResult::SUCCESS);
+		(void)result;
 	}
 	filters.clear();
 }
+
 FilterResult FilterPushdown::AddFilter(unique_ptr<Expression> expr) {
 	PushFilters();
 	// split up the filters by AND predicate
@@ -77,8 +78,8 @@ FilterResult FilterPushdown::AddFilter(unique_ptr<Expression> expr) {
 	expressions.push_back(move(expr));
 	LogicalFilter::SplitPredicates(expressions);
 	// push the filters into the combiner
-	for (auto &expr : expressions) {
-		if (combiner.AddFilter(move(expr)) == FilterResult::UNSATISFIABLE) {
+	for (auto &child_expr : expressions) {
+		if (combiner.AddFilter(move(child_expr)) == FilterResult::UNSATISFIABLE) {
 			return FilterResult::UNSATISFIABLE;
 		}
 	}
@@ -86,8 +87,8 @@ FilterResult FilterPushdown::AddFilter(unique_ptr<Expression> expr) {
 }
 
 void FilterPushdown::GenerateFilters() {
-	if (filters.size() > 0) {
-		assert(!combiner.HasFilters());
+	if (!filters.empty()) {
+		D_ASSERT(!combiner.HasFilters());
 		return;
 	}
 	combiner.GenerateFilters([&](unique_ptr<Expression> filter) {
@@ -100,12 +101,12 @@ void FilterPushdown::GenerateFilters() {
 
 unique_ptr<LogicalOperator> FilterPushdown::FinishPushdown(unique_ptr<LogicalOperator> op) {
 	// unhandled type, first perform filter pushdown in its children
-	for (idx_t i = 0; i < op->children.size(); i++) {
+	for (auto &child : op->children) {
 		FilterPushdown pushdown(optimizer);
-		op->children[i] = pushdown.Rewrite(move(op->children[i]));
+		child = pushdown.Rewrite(move(child));
 	}
 	// now push any existing filters
-	if (filters.size() == 0) {
+	if (filters.empty()) {
 		// no filters to push
 		return op;
 	}
@@ -121,3 +122,5 @@ void FilterPushdown::Filter::ExtractBindings() {
 	bindings.clear();
 	LogicalJoin::GetExpressionBindings(*filter, bindings);
 }
+
+} // namespace duckdb

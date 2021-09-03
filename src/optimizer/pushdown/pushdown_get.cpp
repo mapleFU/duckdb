@@ -1,68 +1,68 @@
 #include "duckdb/optimizer/filter_pushdown.hpp"
+#include "duckdb/optimizer/optimizer.hpp"
+#include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/operator/logical_filter.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/storage/data_table.hpp"
-using namespace duckdb;
-using namespace std;
+
+namespace duckdb {
 
 unique_ptr<LogicalOperator> FilterPushdown::PushdownGet(unique_ptr<LogicalOperator> op) {
-	assert(op->type == LogicalOperatorType::GET);
+	D_ASSERT(op->type == LogicalOperatorType::LOGICAL_GET);
 	auto &get = (LogicalGet &)*op;
-	if (!get.tableFilters.empty()) {
-		if (!filters.empty()) {
-			//! We didn't managed to push down all filters to table scan
-			auto logicalFilter = make_unique<LogicalFilter>();
-			for (auto &f : filters) {
-				logicalFilter->expressions.push_back(move(f->filter));
-			}
-			logicalFilter->children.push_back(move(op));
-			return move(logicalFilter);
-		} else {
+
+	if (get.function.pushdown_complex_filter) {
+		// for the remaining filters, check if we can push any of them into the scan as well
+		vector<unique_ptr<Expression>> expressions;
+		for (auto &filter : filters) {
+			expressions.push_back(move(filter->filter));
+		}
+		filters.clear();
+
+		get.function.pushdown_complex_filter(optimizer.context, get, get.bind_data.get(), expressions);
+
+		if (expressions.empty()) {
 			return op;
+		}
+		// re-generate the filters
+		for (auto &expr : expressions) {
+			auto f = make_unique<Filter>();
+			f->filter = move(expr);
+			f->ExtractBindings();
+			filters.push_back(move(f));
 		}
 	}
-	//! FIXME: We only need to skip if the index is in the column being filtered
-	if (!get.table || !get.table->storage->info->indexes.empty()) {
-		//! now push any existing filters
-		if (filters.empty()) {
-			//! no filters to push
-			return op;
-		}
-		auto filter = make_unique<LogicalFilter>();
-		for (auto &f : filters) {
-			filter->expressions.push_back(move(f->filter));
-		}
-		filter->children.push_back(move(op));
-		return move(filter);
+
+	if (!get.table_filters.filters.empty() || !get.function.filter_pushdown) {
+		// the table function does not support filter pushdown: push a LogicalFilter on top
+		return FinishPushdown(move(op));
 	}
 	PushFilters();
 
-	vector<unique_ptr<Filter>> filtersToPushDown;
-	get.tableFilters = combiner.GenerateTableScanFilters(
-	    [&](unique_ptr<Expression> filter) {
-		    auto f = make_unique<Filter>();
-		    f->filter = move(filter);
-		    f->ExtractBindings();
-		    filtersToPushDown.push_back(move(f));
-	    },
-	    get.column_ids);
-	for (auto &f : get.tableFilters) {
-		f.column_index = get.column_ids[f.column_index];
-	}
+	//! We generate the table filters that will be executed during the table scan
+	//! Right now this only executes simple AND filters
+	get.table_filters = combiner.GenerateTableScanFilters(get.column_ids);
+
+	// //! For more complex filters if all filters to a column are constants we generate a min max boundary used to
+	// check
+	// //! the zonemaps.
+	// auto zonemap_checks = combiner.GenerateZonemapChecks(get.column_ids, get.table_filters);
+
+	// for (auto &f : get.table_filters) {
+	// 	f.column_index = get.column_ids[f.column_index];
+	// }
+
+	// //! Use zonemap checks as table filters for pre-processing
+	// for (auto &zonemap_check : zonemap_checks) {
+	// 	if (zonemap_check.column_index != COLUMN_IDENTIFIER_ROW_ID) {
+	// 		get.table_filters.push_back(zonemap_check);
+	// 	}
+	// }
 
 	GenerateFilters();
-	for (auto &f : filtersToPushDown) {
-		get.expressions.push_back(move(f->filter));
-	}
 
-	if (!filters.empty()) {
-		//! We didn't managed to push down all filters to table scan
-		auto logicalFilter = make_unique<LogicalFilter>();
-		for (auto &f : filters) {
-			logicalFilter->expressions.push_back(move(f->filter));
-		}
-		logicalFilter->children.push_back(move(op));
-		return move(logicalFilter);
-	}
-	return op;
+	//! Now we try to pushdown the remaining filters to perform zonemap checking
+	return FinishPushdown(move(op));
 }
+
+} // namespace duckdb

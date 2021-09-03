@@ -1,16 +1,15 @@
 #include "duckdb/parser/query_node/set_operation_node.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
-bool SetOperationNode::Equals(const QueryNode *other_) const {
-	if (!QueryNode::Equals(other_)) {
+bool SetOperationNode::Equals(const QueryNode *other_p) const {
+	if (!QueryNode::Equals(other_p)) {
 		return false;
 	}
-	if (this == other_) {
+	if (this == other_p) {
 		return true;
 	}
-	auto other = (SetOperationNode *)other_;
+	auto other = (SetOperationNode *)other_p;
 	if (setop_type != other->setop_type) {
 		return false;
 	}
@@ -46,3 +45,5 @@ unique_ptr<QueryNode> SetOperationNode::Deserialize(Deserializer &source) {
 	result->right = QueryNode::Deserialize(source);
 	return move(result);
 }
+
+} // namespace duckdb

@@ -5,8 +5,7 @@
 #include "duckdb/parser/transformer.hpp"
 #include "duckdb/common/string_util.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
 static IndexType StringToIndexType(const string &str) {
 	string upper_str = StringUtil::Upper(str);
@@ -15,22 +14,23 @@ static IndexType StringToIndexType(const string &str) {
 	} else if (upper_str == "ART") {
 		return IndexType::ART;
 	} else {
-		throw ConversionException(StringUtil::Format("No IndexType conversion from string '%s'", upper_str.c_str()));
+		throw ConversionException("No IndexType conversion from string '%s'", upper_str);
 	}
 	return IndexType::INVALID;
 }
 
-unique_ptr<CreateStatement> Transformer::TransformCreateIndex(PGNode *node) {
-	auto stmt = reinterpret_cast<PGIndexStmt *>(node);
-	assert(stmt);
+unique_ptr<CreateStatement> Transformer::TransformCreateIndex(duckdb_libpgquery::PGNode *node) {
+	auto stmt = reinterpret_cast<duckdb_libpgquery::PGIndexStmt *>(node);
+	D_ASSERT(stmt);
 	auto result = make_unique<CreateStatement>();
 	auto info = make_unique<CreateIndexInfo>();
 
 	info->unique = stmt->unique;
-	info->on_conflict = stmt->if_not_exists ? OnCreateConflict::IGNORE : OnCreateConflict::ERROR;
+	info->on_conflict =
+	    stmt->if_not_exists ? OnCreateConflict::IGNORE_ON_CONFLICT : OnCreateConflict::ERROR_ON_CONFLICT;
 
 	for (auto cell = stmt->indexParams->head; cell != nullptr; cell = cell->next) {
-		auto index_element = (PGIndexElem *)cell->data.ptr_value;
+		auto index_element = (duckdb_libpgquery::PGIndexElem *)cell->data.ptr_value;
 		if (index_element->collation) {
 			throw NotImplementedException("Index with collation not supported yet!");
 		}
@@ -43,8 +43,8 @@ unique_ptr<CreateStatement> Transformer::TransformCreateIndex(PGNode *node) {
 			info->expressions.push_back(make_unique<ColumnRefExpression>(index_element->name, stmt->relation->relname));
 		} else {
 			// parse the index expression
-			assert(index_element->expr);
-			info->expressions.push_back(TransformExpression(index_element->expr));
+			D_ASSERT(index_element->expr);
+			info->expressions.push_back(TransformExpression(index_element->expr, 0));
 		}
 	}
 
@@ -63,3 +63,5 @@ unique_ptr<CreateStatement> Transformer::TransformCreateIndex(PGNode *node) {
 	result->info = move(info);
 	return result;
 }
+
+} // namespace duckdb

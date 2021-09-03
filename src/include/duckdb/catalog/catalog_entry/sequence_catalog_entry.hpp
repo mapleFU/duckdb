@@ -38,6 +38,8 @@ public:
 	uint64_t usage_count;
 	//! The sequence counter
 	int64_t counter;
+	//! The most recently returned value
+	int64_t last_value;
 	//! The increment value
 	int64_t increment;
 	//! The minimum value of the sequence
@@ -54,5 +56,7 @@ public:
 	virtual void Serialize(Serializer &serializer);
 	//! Deserializes to a CreateTableInfo
 	static unique_ptr<CreateSequenceInfo> Deserialize(Deserializer &source);
+
+	string ToSQL() override;
 };
 } // namespace duckdb

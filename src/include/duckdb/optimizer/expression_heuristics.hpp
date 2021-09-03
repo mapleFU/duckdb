@@ -15,7 +15,7 @@ namespace duckdb {
 
 class ExpressionHeuristics : public LogicalOperatorVisitor {
 public:
-	ExpressionHeuristics(Optimizer &optimizer) : optimizer(optimizer) {
+	explicit ExpressionHeuristics(Optimizer &optimizer) : optimizer(optimizer) {
 	}
 
 	Optimizer &optimizer;
@@ -48,6 +48,6 @@ private:
 	idx_t ExpressionCost(BoundConjunctionExpression &expr);
 	idx_t ExpressionCost(BoundFunctionExpression &expr);
 	idx_t ExpressionCost(BoundOperatorExpression &expr, ExpressionType &expr_type);
-	idx_t ExpressionCost(TypeId &return_type, idx_t multiplier);
+	idx_t ExpressionCost(PhysicalType return_type, idx_t multiplier);
 };
 } // namespace duckdb

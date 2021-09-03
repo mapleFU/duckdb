@@ -4,8 +4,7 @@
 #include "duckdb/common/serializer.hpp"
 #include "duckdb/common/string_util.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
 OperatorExpression::OperatorExpression(ExpressionType type, unique_ptr<ParsedExpression> left,
                                        unique_ptr<ParsedExpression> right)
@@ -16,6 +15,10 @@ OperatorExpression::OperatorExpression(ExpressionType type, unique_ptr<ParsedExp
 	if (right) {
 		children.push_back(move(right));
 	}
+}
+
+OperatorExpression::OperatorExpression(ExpressionType type, vector<unique_ptr<ParsedExpression>> children)
+    : ParsedExpression(type, ExpressionClass::OPERATOR), children(move(children)) {
 }
 
 string OperatorExpression::ToString() const {
@@ -67,3 +70,5 @@ unique_ptr<ParsedExpression> OperatorExpression::Deserialize(ExpressionType type
 	source.ReadList<ParsedExpression>(expression->children);
 	return move(expression);
 }
+
+} // namespace duckdb

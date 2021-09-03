@@ -3,12 +3,13 @@
 #include "duckdb/common/printer.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/assert.hpp"
+#include "duckdb/common/to_string.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
 using QueryEdge = QueryGraph::QueryEdge;
 
+// LCOV_EXCL_START
 static string QueryEdgeToString(const QueryEdge *info, vector<idx_t> prefix) {
 	string result = "";
 	string source = "[";
@@ -31,8 +32,13 @@ string QueryGraph::ToString() const {
 	return QueryEdgeToString(&root, {});
 }
 
+void QueryGraph::Print() {
+	Printer::Print(ToString());
+}
+// LCOV_EXCL_STOP
+
 QueryEdge *QueryGraph::GetQueryEdge(JoinRelationSet *left) {
-	assert(left && left->count > 0);
+	D_ASSERT(left && left->count > 0);
 	// find the EdgeInfo corresponding to the left set
 	QueryEdge *info = &root;
 	for (idx_t i = 0; i < left->count; i++) {
@@ -49,7 +55,7 @@ QueryEdge *QueryGraph::GetQueryEdge(JoinRelationSet *left) {
 }
 
 void QueryGraph::CreateEdge(JoinRelationSet *left, JoinRelationSet *right, FilterInfo *filter_info) {
-	assert(left && right && left->count > 0 && right->count > 0);
+	D_ASSERT(left && right && left->count > 0 && right->count > 0);
 	// find the EdgeInfo corresponding to the left set
 	auto info = GetQueryEdge(left);
 	// now insert the edge to the right relation, if it does not exist
@@ -71,7 +77,7 @@ void QueryGraph::CreateEdge(JoinRelationSet *left, JoinRelationSet *right, Filte
 	info->neighbors.push_back(move(n));
 }
 
-void QueryGraph::EnumerateNeighbors(JoinRelationSet *node, function<bool(NeighborInfo *)> callback) {
+void QueryGraph::EnumerateNeighbors(JoinRelationSet *node, const std::function<bool(NeighborInfo *)> &callback) {
 	for (idx_t j = 0; j < node->count; j++) {
 		QueryEdge *info = &root;
 		for (idx_t i = j; i < node->count; i++) {
@@ -122,6 +128,4 @@ NeighborInfo *QueryGraph::GetConnection(JoinRelationSet *node, JoinRelationSet *
 	return connection;
 }
 
-void QueryGraph::Print() {
-	Printer::Print(ToString());
-}
+} // namespace duckdb

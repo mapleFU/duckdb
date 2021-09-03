@@ -15,7 +15,7 @@ COPY test FROM 'test/sql/copy/csv/data/test/test.csv';
 query IR
 SELECT COUNT(a), SUM(a) FROM test;
 ----
-5000	12497500.000000
+5000	12497500
 
 query IIT
 SELECT * FROM test ORDER BY 1 LIMIT 3;
@@ -188,7 +188,7 @@ statement ok
 CREATE TABLE unterminated (a VARCHAR);
 
 statement error
-COPY unterminated FROM 'test/sql/copy/csv/data/test/unterminated.csv' (HEADER 0);
+COPY unterminated FROM 'test/sql/copy/csv/data/test/unterminated.csv' (HEADER 0, AUTO_DETECT FALSE);
 
 # 1024 rows (vector size)
 # load CSV file into a table

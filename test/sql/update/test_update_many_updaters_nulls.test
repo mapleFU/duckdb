@@ -2,6 +2,24 @@
 # description: Test update behavior with multiple updaters and NULL values
 # group: [update]
 
+statement ok updater
+PRAGMA enable_verification
+
+statement ok con1
+PRAGMA enable_verification
+
+statement ok con2
+PRAGMA enable_verification
+
+statement ok con3
+PRAGMA enable_verification
+
+statement ok con4
+PRAGMA enable_verification
+
+statement ok con5
+PRAGMA enable_verification
+
 # this test contains five query connections (con1, con2, con3, con4, con5)
 # and one updating connection (updater)
 # create a table, filled with 3 values (1), (2), (3)
@@ -15,26 +33,39 @@ INSERT INTO test VALUES (1), (2), (3)
 statement ok con1
 BEGIN TRANSACTION
 
-statement ok updater
+query I updater
 UPDATE test SET a=NULL WHERE a=1
+----
+1
 
 statement ok con2
 BEGIN TRANSACTION
 
-statement ok updater
+query I updater
 UPDATE test SET a=NULL WHERE a=2
+----
+1
 
 statement ok con3
 BEGIN TRANSACTION
 
-statement ok updater
+query I updater
 UPDATE test SET a=NULL WHERE a=3
+----
+1
 
 statement ok con4
 BEGIN TRANSACTION
 
-statement ok updater
+query I updater
+SELECT COUNT(*) FROM test WHERE a IS NULL
+----
+3
+
+query I updater
 UPDATE test SET a=99 WHERE a IS NULL
+----
+3
 
 statement ok con5
 BEGIN TRANSACTION

@@ -10,23 +10,34 @@
 
 #include "duckdb/parser/parsed_data/parse_info.hpp"
 #include "duckdb/parser/column_definition.hpp"
+#include "duckdb/common/enums/catalog_type.hpp"
 
 namespace duckdb {
 
-enum class AlterType : uint8_t { INVALID = 0, ALTER_TABLE = 1 };
+enum class AlterType : uint8_t { INVALID = 0, ALTER_TABLE = 1, ALTER_VIEW = 2 };
 
 struct AlterInfo : public ParseInfo {
-	AlterInfo(AlterType type) : type(type) {
+	AlterInfo(AlterType type, string schema, string name) : type(type), schema(schema), name(name) {
 	}
-	virtual ~AlterInfo() {
+	~AlterInfo() override {
 	}
 
 	AlterType type;
+	//! Schema name to alter
+	string schema;
+	//! Entry name to alter
+	string name;
 
+public:
+	virtual CatalogType GetCatalogType() = 0;
+	virtual unique_ptr<AlterInfo> Copy() const = 0;
 	virtual void Serialize(Serializer &serializer);
 	static unique_ptr<AlterInfo> Deserialize(Deserializer &source);
 };
 
+//===--------------------------------------------------------------------===//
+// Alter Table
+//===--------------------------------------------------------------------===//
 enum class AlterTableType : uint8_t {
 	INVALID = 0,
 	RENAME_COLUMN = 1,
@@ -39,19 +50,18 @@ enum class AlterTableType : uint8_t {
 
 struct AlterTableInfo : public AlterInfo {
 	AlterTableInfo(AlterTableType type, string schema, string table)
-	    : AlterInfo(AlterType::ALTER_TABLE), alter_table_type(type), schema(schema), table(table) {
+	    : AlterInfo(AlterType::ALTER_TABLE, schema, table), alter_table_type(type) {
 	}
-	virtual ~AlterTableInfo() override {
+	~AlterTableInfo() override {
 	}
 
 	AlterTableType alter_table_type;
-	//! Schema name to alter to
-	string schema;
-	//! Table name to alter to
-	string table;
 
 public:
-	virtual void Serialize(Serializer &serializer) override;
+	CatalogType GetCatalogType() override {
+		return CatalogType::TABLE_ENTRY;
+	}
+	void Serialize(Serializer &serializer) override;
 	static unique_ptr<AlterInfo> Deserialize(Deserializer &source);
 };
 
@@ -59,18 +69,20 @@ public:
 // RenameColumnInfo
 //===--------------------------------------------------------------------===//
 struct RenameColumnInfo : public AlterTableInfo {
-	RenameColumnInfo(string schema, string table, string name, string new_name)
-	    : AlterTableInfo(AlterTableType::RENAME_COLUMN, schema, table), name(name), new_name(new_name) {
+	RenameColumnInfo(string schema, string table, string old_name_p, string new_name_p)
+	    : AlterTableInfo(AlterTableType::RENAME_COLUMN, move(schema), move(table)), old_name(move(old_name_p)),
+	      new_name(move(new_name_p)) {
 	}
 	~RenameColumnInfo() override {
 	}
 
 	//! Column old name
-	string name;
+	string old_name;
 	//! Column new name
 	string new_name;
 
 public:
+	unique_ptr<AlterInfo> Copy() const override;
 	void Serialize(Serializer &serializer) override;
 	static unique_ptr<AlterInfo> Deserialize(Deserializer &source, string schema, string table);
 };
@@ -85,10 +97,11 @@ struct RenameTableInfo : public AlterTableInfo {
 	~RenameTableInfo() override {
 	}
 
-	//! Table new name
+	//! Relation new name
 	string new_table_name;
 
 public:
+	unique_ptr<AlterInfo> Copy() const override;
 	void Serialize(Serializer &serializer) override;
 	static unique_ptr<AlterInfo> Deserialize(Deserializer &source, string schema, string table);
 };
@@ -107,6 +120,7 @@ struct AddColumnInfo : public AlterTableInfo {
 	ColumnDefinition new_column;
 
 public:
+	unique_ptr<AlterInfo> Copy() const override;
 	void Serialize(Serializer &serializer) override;
 	static unique_ptr<AlterInfo> Deserialize(Deserializer &source, string schema, string table);
 };
@@ -128,6 +142,7 @@ struct RemoveColumnInfo : public AlterTableInfo {
 	bool if_exists;
 
 public:
+	unique_ptr<AlterInfo> Copy() const override;
 	void Serialize(Serializer &serializer) override;
 	static unique_ptr<AlterInfo> Deserialize(Deserializer &source, string schema, string table);
 };
@@ -136,7 +151,7 @@ public:
 // ChangeColumnTypeInfo
 //===--------------------------------------------------------------------===//
 struct ChangeColumnTypeInfo : public AlterTableInfo {
-	ChangeColumnTypeInfo(string schema, string table, string column_name, SQLType target_type,
+	ChangeColumnTypeInfo(string schema, string table, string column_name, LogicalType target_type,
 	                     unique_ptr<ParsedExpression> expression)
 	    : AlterTableInfo(AlterTableType::ALTER_COLUMN_TYPE, schema, table), column_name(move(column_name)),
 	      target_type(move(target_type)), expression(move(expression)) {
@@ -147,11 +162,12 @@ struct ChangeColumnTypeInfo : public AlterTableInfo {
 	//! The column name to alter
 	string column_name;
 	//! The target type of the column
-	SQLType target_type;
+	LogicalType target_type;
 	//! The expression used for data conversion
 	unique_ptr<ParsedExpression> expression;
 
 public:
+	unique_ptr<AlterInfo> Copy() const override;
 	void Serialize(Serializer &serializer) override;
 	static unique_ptr<AlterInfo> Deserialize(Deserializer &source, string schema, string table);
 };
@@ -173,6 +189,48 @@ struct SetDefaultInfo : public AlterTableInfo {
 	unique_ptr<ParsedExpression> expression;
 
 public:
+	unique_ptr<AlterInfo> Copy() const override;
+	void Serialize(Serializer &serializer) override;
+	static unique_ptr<AlterInfo> Deserialize(Deserializer &source, string schema, string table);
+};
+
+//===--------------------------------------------------------------------===//
+// Alter View
+//===--------------------------------------------------------------------===//
+enum class AlterViewType : uint8_t { INVALID = 0, RENAME_VIEW = 1 };
+
+struct AlterViewInfo : public AlterInfo {
+	AlterViewInfo(AlterViewType type, string schema, string view)
+	    : AlterInfo(AlterType::ALTER_VIEW, schema, view), alter_view_type(type) {
+	}
+	~AlterViewInfo() override {
+	}
+
+	AlterViewType alter_view_type;
+
+public:
+	CatalogType GetCatalogType() override {
+		return CatalogType::VIEW_ENTRY;
+	}
+	void Serialize(Serializer &serializer) override;
+	static unique_ptr<AlterInfo> Deserialize(Deserializer &source);
+};
+
+//===--------------------------------------------------------------------===//
+// RenameViewInfo
+//===--------------------------------------------------------------------===//
+struct RenameViewInfo : public AlterViewInfo {
+	RenameViewInfo(string schema, string view, string new_name)
+	    : AlterViewInfo(AlterViewType::RENAME_VIEW, schema, view), new_view_name(new_name) {
+	}
+	~RenameViewInfo() override {
+	}
+
+	//! Relation new name
+	string new_view_name;
+
+public:
+	unique_ptr<AlterInfo> Copy() const override;
 	void Serialize(Serializer &serializer) override;
 	static unique_ptr<AlterInfo> Deserialize(Deserializer &source, string schema, string table);
 };

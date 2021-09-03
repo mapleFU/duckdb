@@ -1,21 +1,17 @@
 #include "duckdb/parser/statement/insert_statement.hpp"
-#include "duckdb/parser/tableref/basetableref.hpp"
 #include "duckdb/parser/tableref/expressionlistref.hpp"
 #include "duckdb/parser/transformer.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
-unique_ptr<TableRef> Transformer::TransformValuesList(PGList *list) {
+unique_ptr<TableRef> Transformer::TransformValuesList(duckdb_libpgquery::PGList *list) {
 	auto result = make_unique<ExpressionListRef>();
-	for (auto value_list = list->head; value_list != NULL; value_list = value_list->next) {
-		auto target = (PGList *)(value_list->data.ptr_value);
+	for (auto value_list = list->head; value_list != nullptr; value_list = value_list->next) {
+		auto target = (duckdb_libpgquery::PGList *)(value_list->data.ptr_value);
 
 		vector<unique_ptr<ParsedExpression>> insert_values;
-		if (!TransformExpressionList(target, insert_values)) {
-			throw ParserException("Could not parse expression list!");
-		}
-		if (result->values.size() > 0) {
+		TransformExpressionList(*target, insert_values, 0);
+		if (!result->values.empty()) {
 			if (result->values[0].size() != insert_values.size()) {
 				throw ParserException("VALUES lists must all be the same length");
 			}
@@ -26,24 +22,28 @@ unique_ptr<TableRef> Transformer::TransformValuesList(PGList *list) {
 	return move(result);
 }
 
-unique_ptr<InsertStatement> Transformer::TransformInsert(PGNode *node) {
-	auto stmt = reinterpret_cast<PGInsertStmt *>(node);
-	assert(stmt);
+unique_ptr<InsertStatement> Transformer::TransformInsert(duckdb_libpgquery::PGNode *node) {
+	auto stmt = reinterpret_cast<duckdb_libpgquery::PGInsertStmt *>(node);
+	D_ASSERT(stmt);
+	if (stmt->onConflictClause && stmt->onConflictClause->action != duckdb_libpgquery::PG_ONCONFLICT_NONE) {
+		throw ParserException("ON CONFLICT IGNORE/UPDATE clauses are not supported");
+	}
 
 	auto result = make_unique<InsertStatement>();
 
 	// first check if there are any columns specified
 	if (stmt->cols) {
-		for (auto c = stmt->cols->head; c != NULL; c = lnext(c)) {
-			auto target = (PGResTarget *)(c->data.ptr_value);
-			result->columns.push_back(string(target->name));
+		for (auto c = stmt->cols->head; c != nullptr; c = lnext(c)) {
+			auto target = (duckdb_libpgquery::PGResTarget *)(c->data.ptr_value);
+			result->columns.emplace_back(target->name);
 		}
 	}
-	result->select_statement = TransformSelect(stmt->selectStmt);
+	result->select_statement = TransformSelect(stmt->selectStmt, false);
 
-	auto ref = TransformRangeVar(stmt->relation);
-	auto &table = *reinterpret_cast<BaseTableRef *>(ref.get());
-	result->table = table.table_name;
-	result->schema = table.schema_name;
+	auto qname = TransformQualifiedName(stmt->relation);
+	result->table = qname.name;
+	result->schema = qname.schema;
 	return result;
 }
+
+} // namespace duckdb

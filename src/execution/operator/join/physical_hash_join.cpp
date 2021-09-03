@@ -1,24 +1,28 @@
 #include "duckdb/execution/operator/join/physical_hash_join.hpp"
-
+#include "duckdb/parallel/thread_context.hpp"
 #include "duckdb/storage/storage_manager.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
 #include "duckdb/function/aggregate/distributive_functions.hpp"
-
-using namespace std;
+#include "duckdb/main/client_context.hpp"
+#include "duckdb/main/query_profiler.hpp"
 
 namespace duckdb {
 
+bool CanCacheType(const LogicalType &type);
+
 PhysicalHashJoin::PhysicalHashJoin(LogicalOperator &op, unique_ptr<PhysicalOperator> left,
                                    unique_ptr<PhysicalOperator> right, vector<JoinCondition> cond, JoinType join_type,
-                                   vector<idx_t> left_projection_map, vector<idx_t> right_projection_map)
-    : PhysicalComparisonJoin(op, PhysicalOperatorType::HASH_JOIN, move(cond), join_type),
-      right_projection_map(right_projection_map) {
+                                   const vector<idx_t> &left_projection_map,
+                                   const vector<idx_t> &right_projection_map_p, vector<LogicalType> delim_types,
+                                   idx_t estimated_cardinality)
+    : PhysicalComparisonJoin(op, PhysicalOperatorType::HASH_JOIN, move(cond), join_type, estimated_cardinality),
+      right_projection_map(right_projection_map_p), delim_types(move(delim_types)) {
 	children.push_back(move(left));
 	children.push_back(move(right));
 
-	assert(left_projection_map.size() == 0);
+	D_ASSERT(left_projection_map.size() == 0);
 	for (auto &condition : conditions) {
 		condition_types.push_back(condition.left->return_type);
 	}
@@ -27,11 +31,19 @@ PhysicalHashJoin::PhysicalHashJoin(LogicalOperator &op, unique_ptr<PhysicalOpera
 	if (join_type != JoinType::ANTI && join_type != JoinType::SEMI && join_type != JoinType::MARK) {
 		build_types = LogicalOperator::MapTypes(children[1]->GetTypes(), right_projection_map);
 	}
+	// we avoid caching lists, since lists can be very large caching can have very negative effects
+	can_cache = true;
+	for (auto &type : types) {
+		if (!CanCacheType(type)) {
+			can_cache = false;
+		}
+	}
 }
 
 PhysicalHashJoin::PhysicalHashJoin(LogicalOperator &op, unique_ptr<PhysicalOperator> left,
-                                   unique_ptr<PhysicalOperator> right, vector<JoinCondition> cond, JoinType join_type)
-    : PhysicalHashJoin(op, move(left), move(right), move(cond), join_type, {}, {}) {
+                                   unique_ptr<PhysicalOperator> right, vector<JoinCondition> cond, JoinType join_type,
+                                   idx_t estimated_cardinality)
+    : PhysicalHashJoin(op, move(left), move(right), move(cond), join_type, {}, {}, {}, estimated_cardinality) {
 }
 
 //===--------------------------------------------------------------------===//
@@ -59,7 +71,7 @@ unique_ptr<GlobalOperatorState> PhysicalHashJoin::GetGlobalState(ClientContext &
 	auto state = make_unique<HashJoinGlobalState>();
 	state->hash_table =
 	    make_unique<JoinHashTable>(BufferManager::GetBufferManager(context), conditions, build_types, join_type);
-	if (delim_types.size() > 0 && join_type == JoinType::MARK) {
+	if (!delim_types.empty() && join_type == JoinType::MARK) {
 		// correlated MARK join
 		if (delim_types.size() + 1 == conditions.size()) {
 			// the correlated MARK join has one more condition than the amount of correlated columns
@@ -72,20 +84,30 @@ unique_ptr<GlobalOperatorState> PhysicalHashJoin::GetGlobalState(ClientContext &
 			// - (2) the group containing a NULL value [in which case FALSE becomes NULL]
 			auto &info = state->hash_table->correlated_mark_join_info;
 
-			vector<TypeId> payload_types = {TypeId::INT64, TypeId::INT64}; // COUNT types
-			vector<AggregateFunction> aggregate_functions = {CountStarFun::GetFunction(), CountFun::GetFunction()};
+			vector<LogicalType> payload_types;
 			vector<BoundAggregateExpression *> correlated_aggregates;
-			for (idx_t i = 0; i < aggregate_functions.size(); ++i) {
-				auto aggr = make_unique<BoundAggregateExpression>(payload_types[i], aggregate_functions[i], false);
-				correlated_aggregates.push_back(&*aggr);
-				info.correlated_aggregates.push_back(move(aggr));
-			}
-			info.correlated_counts =
-			    make_unique<SuperLargeHashTable>(1024, delim_types, payload_types, correlated_aggregates);
+			unique_ptr<BoundAggregateExpression> aggr;
+
+			// jury-rigging the GroupedAggregateHashTable
+			// we need a count_star and a count to get counts with and without NULLs
+			aggr = AggregateFunction::BindAggregateFunction(context, CountStarFun::GetFunction(), {}, nullptr, false);
+			correlated_aggregates.push_back(&*aggr);
+			payload_types.push_back(aggr->return_type);
+			info.correlated_aggregates.push_back(move(aggr));
+
+			auto count_fun = CountFun::GetFunction();
+			vector<unique_ptr<Expression>> children;
+			// this is a dummy but we need it to make the hash table understand whats going on
+			children.push_back(make_unique_base<Expression, BoundReferenceExpression>(count_fun.return_type, 0));
+			aggr = AggregateFunction::BindAggregateFunction(context, count_fun, move(children), nullptr, false);
+			correlated_aggregates.push_back(&*aggr);
+			payload_types.push_back(aggr->return_type);
+			info.correlated_aggregates.push_back(move(aggr));
+
+			info.correlated_counts = make_unique<GroupedAggregateHashTable>(
+			    BufferManager::GetBufferManager(context), delim_types, payload_types, correlated_aggregates);
 			info.correlated_types = delim_types;
-			// FIXME: these can be initialized "empty" (without allocating empty vectors)
 			info.group_chunk.Initialize(delim_types);
-			info.payload_chunk.Initialize(payload_types);
 			info.result_chunk.Initialize(payload_types);
 		}
 	}
@@ -94,7 +116,7 @@ unique_ptr<GlobalOperatorState> PhysicalHashJoin::GetGlobalState(ClientContext &
 
 unique_ptr<LocalSinkState> PhysicalHashJoin::GetLocalSinkState(ExecutionContext &context) {
 	auto state = make_unique<HashJoinLocalState>();
-	if (right_projection_map.size() > 0) {
+	if (!right_projection_map.empty()) {
 		state->build_chunk.Initialize(build_types);
 	}
 	for (auto &cond : conditions) {
@@ -104,14 +126,14 @@ unique_ptr<LocalSinkState> PhysicalHashJoin::GetLocalSinkState(ExecutionContext 
 	return move(state);
 }
 
-void PhysicalHashJoin::Sink(ExecutionContext &context, GlobalOperatorState &state, LocalSinkState &lstate_,
-                            DataChunk &input) {
+void PhysicalHashJoin::Sink(ExecutionContext &context, GlobalOperatorState &state, LocalSinkState &lstate_p,
+                            DataChunk &input) const {
 	auto &sink = (HashJoinGlobalState &)state;
-	auto &lstate = (HashJoinLocalState &)lstate_;
+	auto &lstate = (HashJoinLocalState &)lstate_p;
 	// resolve the join keys for the right chunk
 	lstate.build_executor.Execute(input, lstate.join_keys);
 	// build the HT
-	if (right_projection_map.size() > 0) {
+	if (!right_projection_map.empty()) {
 		// there is a projection map: fill the build chunk with the projected columns
 		lstate.build_chunk.Reset();
 		lstate.build_chunk.SetCardinality(input);
@@ -119,20 +141,25 @@ void PhysicalHashJoin::Sink(ExecutionContext &context, GlobalOperatorState &stat
 			lstate.build_chunk.data[i].Reference(input.data[right_projection_map[i]]);
 		}
 		sink.hash_table->Build(lstate.join_keys, lstate.build_chunk);
-	} else {
+	} else if (!build_types.empty()) {
 		// there is not a projected map: place the entire right chunk in the HT
 		sink.hash_table->Build(lstate.join_keys, input);
+	} else {
+		// there are only keys: place an empty chunk in the payload
+		lstate.build_chunk.SetCardinality(input.size());
+		sink.hash_table->Build(lstate.join_keys, lstate.build_chunk);
 	}
 }
 
 //===--------------------------------------------------------------------===//
 // Finalize
 //===--------------------------------------------------------------------===//
-void PhysicalHashJoin::Finalize(ClientContext &context, unique_ptr<GlobalOperatorState> state) {
+bool PhysicalHashJoin::Finalize(Pipeline &pipeline, ClientContext &context, unique_ptr<GlobalOperatorState> state) {
 	auto &sink = (HashJoinGlobalState &)*state;
 	sink.hash_table->Finalize();
 
-	PhysicalSink::Finalize(context, move(state));
+	PhysicalSink::Finalize(pipeline, context, move(state));
+	return true;
 }
 
 //===--------------------------------------------------------------------===//
@@ -140,8 +167,9 @@ void PhysicalHashJoin::Finalize(ClientContext &context, unique_ptr<GlobalOperato
 //===--------------------------------------------------------------------===//
 class PhysicalHashJoinState : public PhysicalOperatorState {
 public:
-	PhysicalHashJoinState(PhysicalOperator *left, PhysicalOperator *right, vector<JoinCondition> &conditions)
-	    : PhysicalOperatorState(left) {
+	PhysicalHashJoinState(PhysicalOperator &op, PhysicalOperator *left, PhysicalOperator *right,
+	                      vector<JoinCondition> &conditions)
+	    : PhysicalOperatorState(op, left) {
 	}
 
 	DataChunk cached_chunk;
@@ -150,8 +178,27 @@ public:
 	unique_ptr<JoinHashTable::ScanStructure> scan_structure;
 };
 
+bool CanCacheType(const LogicalType &type) {
+	switch (type.id()) {
+	case LogicalTypeId::LIST:
+	case LogicalTypeId::MAP:
+		return false;
+	case LogicalTypeId::STRUCT: {
+		auto &entries = StructType::GetChildTypes(type);
+		for (auto &entry : entries) {
+			if (!CanCacheType(entry.second)) {
+				return false;
+			}
+		}
+		return true;
+	}
+	default:
+		return true;
+	}
+}
+
 unique_ptr<PhysicalOperatorState> PhysicalHashJoin::GetOperatorState() {
-	auto state = make_unique<PhysicalHashJoinState>(children[0].get(), children[1].get(), conditions);
+	auto state = make_unique<PhysicalHashJoinState>(*this, children[0].get(), children[1].get(), conditions);
 	state->cached_chunk.Initialize(types);
 	state->join_keys.Initialize(condition_types);
 	for (auto &cond : conditions) {
@@ -160,12 +207,16 @@ unique_ptr<PhysicalOperatorState> PhysicalHashJoin::GetOperatorState() {
 	return move(state);
 }
 
-void PhysicalHashJoin::GetChunkInternal(ExecutionContext &context, DataChunk &chunk, PhysicalOperatorState *state_) {
-	auto state = reinterpret_cast<PhysicalHashJoinState *>(state_);
+void PhysicalHashJoin::GetChunkInternal(ExecutionContext &context, DataChunk &chunk,
+                                        PhysicalOperatorState *state_p) const {
+	auto state = reinterpret_cast<PhysicalHashJoinState *>(state_p);
 	auto &sink = (HashJoinGlobalState &)*sink_state;
-	if (sink.hash_table->size() == 0 &&
-	    (sink.hash_table->join_type == JoinType::INNER || sink.hash_table->join_type == JoinType::SEMI)) {
-		// empty hash table with INNER or SEMI join means empty result set
+	bool join_is_inner_right_semi =
+	    (sink.hash_table->join_type == JoinType::INNER || sink.hash_table->join_type == JoinType::RIGHT ||
+	     sink.hash_table->join_type == JoinType::SEMI);
+
+	if (sink.hash_table->Count() == 0 && join_is_inner_right_semi) {
+		// empty hash table with INNER, RIGHT or SEMI join means empty result set
 		return;
 	}
 	do {
@@ -174,24 +225,24 @@ void PhysicalHashJoin::GetChunkInternal(ExecutionContext &context, DataChunk &ch
 #if STANDARD_VECTOR_SIZE >= 128
 			if (state->cached_chunk.size() > 0) {
 				// finished probing but cached data remains, return cached chunk
-				chunk.Reference(state->cached_chunk);
-				state->cached_chunk.Reset();
+				chunk.Move(state->cached_chunk);
+				state->cached_chunk.Initialize(types);
 			} else
 #endif
-			    if (join_type == JoinType::OUTER) {
-				// check if we need to scan any unmatched tuples from the RHS for the full outer join
+			    if (IsRightOuterJoin(join_type)) {
+				// check if we need to scan any unmatched tuples from the RHS for the full/right outer join
 				sink.hash_table->ScanFullOuter(chunk, sink.ht_scan_state);
 			}
 			return;
 		} else {
 #if STANDARD_VECTOR_SIZE >= 128
-			if (chunk.size() < 64) {
+			if (can_cache && chunk.size() < 64) {
 				// small chunk: add it to chunk cache and continue
 				state->cached_chunk.Append(chunk);
 				if (state->cached_chunk.size() >= (STANDARD_VECTOR_SIZE - 64)) {
 					// chunk cache full: return it
-					chunk.Reference(state->cached_chunk);
-					state->cached_chunk.Reset();
+					chunk.Move(state->cached_chunk);
+					state->cached_chunk.Initialize(types);
 					return;
 				} else {
 					// chunk cache not full: probe again
@@ -207,8 +258,9 @@ void PhysicalHashJoin::GetChunkInternal(ExecutionContext &context, DataChunk &ch
 	} while (true);
 }
 
-void PhysicalHashJoin::ProbeHashTable(ExecutionContext &context, DataChunk &chunk, PhysicalOperatorState *state_) {
-	auto state = reinterpret_cast<PhysicalHashJoinState *>(state_);
+void PhysicalHashJoin::ProbeHashTable(ExecutionContext &context, DataChunk &chunk,
+                                      PhysicalOperatorState *state_p) const {
+	auto state = reinterpret_cast<PhysicalHashJoinState *>(state_p);
 	auto &sink = (HashJoinGlobalState &)*sink_state;
 
 	if (state->child_chunk.size() > 0 && state->scan_structure) {
@@ -228,7 +280,7 @@ void PhysicalHashJoin::ProbeHashTable(ExecutionContext &context, DataChunk &chun
 		if (state->child_chunk.size() == 0) {
 			return;
 		}
-		if (sink.hash_table->size() == 0) {
+		if (sink.hash_table->Count() == 0) {
 			ConstructEmptyJoinResult(sink.hash_table->join_type, sink.hash_table->has_null, state->child_chunk, chunk);
 			return;
 		}
@@ -239,6 +291,18 @@ void PhysicalHashJoin::ProbeHashTable(ExecutionContext &context, DataChunk &chun
 		state->scan_structure = sink.hash_table->Probe(state->join_keys);
 		state->scan_structure->Next(state->join_keys, state->child_chunk, chunk);
 	} while (chunk.size() == 0);
+}
+void PhysicalHashJoin::FinalizeOperatorState(PhysicalOperatorState &state, ExecutionContext &context) {
+	auto &state_p = reinterpret_cast<PhysicalHashJoinState &>(state);
+	context.thread.profiler.Flush(this, &state_p.probe_executor, "probe_executor", 0);
+	if (!children.empty() && state.child_state) {
+		children[0]->FinalizeOperatorState(*state.child_state, context);
+	}
+}
+void PhysicalHashJoin::Combine(ExecutionContext &context, GlobalOperatorState &gstate, LocalSinkState &lstate) {
+	auto &state = (HashJoinLocalState &)lstate;
+	context.thread.profiler.Flush(this, &state.build_executor, "build_executor", 1);
+	context.client.profiler->Flush(context.thread.profiler);
 }
 
 } // namespace duckdb

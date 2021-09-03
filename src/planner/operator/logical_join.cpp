@@ -3,8 +3,7 @@
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
 LogicalJoin::LogicalJoin(JoinType join_type, LogicalOperatorType logical_type)
     : LogicalOperator(logical_type), join_type(join_type) {
@@ -18,7 +17,7 @@ vector<ColumnBinding> LogicalJoin::GetColumnBindings() {
 	}
 	if (join_type == JoinType::MARK) {
 		// for MARK join we project the left hand side plus the MARK column
-		left_bindings.push_back(ColumnBinding(mark_index, 0));
+		left_bindings.emplace_back(mark_index, 0);
 		return left_bindings;
 	}
 	// for other join types we project both the LHS and the RHS
@@ -35,7 +34,7 @@ void LogicalJoin::ResolveTypes() {
 	}
 	if (join_type == JoinType::MARK) {
 		// for MARK join we project the left hand side, plus a BOOLEAN column indicating the MARK
-		types.push_back(TypeId::BOOL);
+		types.push_back(LogicalType::BOOLEAN);
 		return;
 	}
 	// for any other join we project both sides
@@ -53,8 +52,10 @@ void LogicalJoin::GetTableReferences(LogicalOperator &op, unordered_set<idx_t> &
 void LogicalJoin::GetExpressionBindings(Expression &expr, unordered_set<idx_t> &bindings) {
 	if (expr.type == ExpressionType::BOUND_COLUMN_REF) {
 		auto &colref = (BoundColumnRefExpression &)expr;
-		assert(colref.depth == 0);
+		D_ASSERT(colref.depth == 0);
 		bindings.insert(colref.binding.table_index);
 	}
 	ExpressionIterator::EnumerateChildren(expr, [&](Expression &child) { GetExpressionBindings(child, bindings); });
 }
+
+} // namespace duckdb

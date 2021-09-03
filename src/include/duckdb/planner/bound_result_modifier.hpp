@@ -8,15 +8,18 @@
 
 #pragma once
 
+#include "duckdb/common/limits.hpp"
 #include "duckdb/parser/result_modifier.hpp"
+#include "duckdb/planner/bound_statement.hpp"
 #include "duckdb/planner/expression.hpp"
+#include "duckdb/storage/statistics/base_statistics.hpp"
 
 namespace duckdb {
 
 //! A ResultModifier
 class BoundResultModifier {
 public:
-	BoundResultModifier(ResultModifierType type) : type(type) {
+	explicit BoundResultModifier(ResultModifierType type) : type(type) {
 	}
 	virtual ~BoundResultModifier() {
 	}
@@ -25,24 +28,41 @@ public:
 };
 
 struct BoundOrderByNode {
+public:
 	BoundOrderByNode(OrderType type, OrderByNullType null_order, unique_ptr<Expression> expression)
 	    : type(type), null_order(null_order), expression(move(expression)) {
+	}
+	BoundOrderByNode(OrderType type, OrderByNullType null_order, unique_ptr<Expression> expression,
+	                 unique_ptr<BaseStatistics> stats)
+	    : type(type), null_order(null_order), expression(move(expression)), stats(move(stats)) {
+	}
+
+	BoundOrderByNode Copy() const {
+		if (stats) {
+			return BoundOrderByNode(type, null_order, expression->Copy(), stats->Copy());
+		} else {
+			return BoundOrderByNode(type, null_order, expression->Copy());
+		}
 	}
 
 	OrderType type;
 	OrderByNullType null_order;
 	unique_ptr<Expression> expression;
+	unique_ptr<BaseStatistics> stats;
 };
 
 class BoundLimitModifier : public BoundResultModifier {
 public:
 	BoundLimitModifier() : BoundResultModifier(ResultModifierType::LIMIT_MODIFIER) {
 	}
-
-	//! LIMIT count
-	int64_t limit = -1;
+	//! LIMIT
+	int64_t limit_val = NumericLimits<int64_t>::Maximum();
 	//! OFFSET
-	int64_t offset = -1;
+	int64_t offset_val = 0;
+	//! Expression in case limit is not constant
+	unique_ptr<Expression> limit;
+	//! Expression in case limit is not constant
+	unique_ptr<Expression> offset;
 };
 
 class BoundOrderModifier : public BoundResultModifier {
