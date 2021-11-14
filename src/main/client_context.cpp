@@ -172,6 +172,7 @@ unique_ptr<DataChunk> ClientContext::FetchInternal(ClientContextLock &) {
 shared_ptr<PreparedStatementData> ClientContext::CreatePreparedStatement(ClientContextLock &lock, const string &query,
                                                                          unique_ptr<SQLStatement> statement) {
 	StatementType statement_type = statement->type;
+
 	auto result = make_shared<PreparedStatementData>(statement_type);
 
 	profiler->StartPhase("planner");
@@ -191,8 +192,10 @@ shared_ptr<PreparedStatementData> ClientContext::CreatePreparedStatement(ClientC
 	result->names = planner.names;
 	result->types = planner.types;
 	result->value_map = move(planner.value_map);
+	// 拿到 catalog 版本.
 	result->catalog_version = Transaction::GetTransaction(*this).catalog_version;
 
+	// 走 Optimizer 优化.
 	if (enable_optimizer) {
 		profiler->StartPhase("optimizer");
 		Optimizer optimizer(*planner.binder, *this);
@@ -214,6 +217,7 @@ shared_ptr<PreparedStatementData> ClientContext::CreatePreparedStatement(ClientC
 #ifdef DEBUG
 	D_ASSERT(!physical_plan->ToString().empty());
 #endif
+	// 拿到物理的执行计划.
 	result->plan = move(physical_plan);
 	return result;
 }
@@ -295,9 +299,11 @@ vector<unique_ptr<SQLStatement>> ClientContext::ParseStatements(const string &qu
 
 vector<unique_ptr<SQLStatement>> ClientContext::ParseStatementsInternal(ClientContextLock &lock, const string &query) {
 	Parser parser;
+	// 用 ParseQuery 解析.
 	parser.ParseQuery(query);
 
 	PragmaHandler handler(*this);
+	// 处理 Pragma, 但是没有清理?
 	handler.HandlePragmaStatements(lock, parser.statements);
 
 	return move(parser.statements);
@@ -398,6 +404,7 @@ unique_ptr<QueryResult> ClientContext::RunStatementInternal(ClientContextLock &l
                                                             unique_ptr<SQLStatement> statement,
                                                             bool allow_stream_result) {
 	// prepare the query for execution
+	// 准备执行, 拿到 expression.
 	auto prepared = CreatePreparedStatement(lock, query, move(statement));
 	// by default, no values are bound
 	vector<Value> bound_values;
@@ -413,6 +420,7 @@ unique_ptr<QueryResult> ClientContext::RunStatementOrPreparedStatement(ClientCon
 	this->query = query;
 
 	unique_ptr<QueryResult> result;
+	// 处理一些事务逻辑.
 	// check if we are on AutoCommit. In this case we should start a transaction.
 	if (transaction.IsAutoCommit()) {
 		transaction.BeginTransaction();
@@ -438,9 +446,11 @@ unique_ptr<QueryResult> ClientContext::RunStatementOrPreparedStatement(ClientCon
 	// start the profiler
 	profiler->StartQuery(query);
 	try {
+		// 具体运行.
 		if (statement) {
 			result = RunStatementInternal(lock, query, move(statement), allow_stream_result);
 		} else {
+			// 处理 PrepareStmt.
 			auto &catalog = Catalog::GetCatalog(*this);
 			if (prepared->unbound_statement && catalog.GetCatalogVersion() != prepared->catalog_version) {
 				D_ASSERT(prepared->unbound_statement.get());
@@ -497,6 +507,8 @@ unique_ptr<QueryResult> ClientContext::RunStatements(ClientContextLock &lock, co
                                                      bool allow_stream_result) {
 	// now we have a list of statements
 	// iterate over them and execute them one by one
+	//
+	// QueryResult 可以被连接起来.
 	unique_ptr<QueryResult> result;
 	QueryResult *last_result = nullptr;
 	for (idx_t i = 0; i < statements.size(); i++) {
@@ -504,6 +516,7 @@ unique_ptr<QueryResult> ClientContext::RunStatements(ClientContextLock &lock, co
 		bool is_last_statement = i + 1 == statements.size();
 		auto current_result = RunStatement(lock, query, move(statement), allow_stream_result && is_last_statement);
 		// now append the result to the list of results
+		// 把结果串联成 Result Chain.
 		if (!last_result) {
 			// first result of the query
 			result = move(current_result);
@@ -561,6 +574,7 @@ unique_ptr<QueryResult> ClientContext::Query(const string &query, bool allow_str
 		return make_unique<MaterializedQueryResult>(ex.what());
 	}
 
+	// stmts 如果是空, 那么返回结果不合法.
 	if (statements.empty()) {
 		// no statements, return empty successful result
 		return make_unique<MaterializedQueryResult>(StatementType::INVALID_STATEMENT);

@@ -14,7 +14,8 @@
 
 namespace duckdb {
 
-//! LogicalGet represents a scan operation from a data source
+//! LogicalGet represents a scan operation from a data source.
+//! 对 Table 的 Scan.
 class LogicalGet : public LogicalOperator {
 public:
 	LogicalGet(idx_t table_index, TableFunction function, unique_ptr<FunctionData> bind_data,

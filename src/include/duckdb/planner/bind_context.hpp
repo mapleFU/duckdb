@@ -35,6 +35,8 @@ struct UsingColumnSet {
 
 //! The BindContext object keeps track of all the tables and columns that are
 //! encountered during the binding process.
+//!
+//! Binder 的上下文.
 class BindContext {
 public:
 	//! Keep track of recursive CTE references

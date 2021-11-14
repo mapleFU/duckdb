@@ -4,6 +4,7 @@
 
 namespace duckdb {
 
+//! 基本上就是针对 stmt 类型 xjb 初始化.
 PreparedStatementData::PreparedStatementData(StatementType type)
     : statement_type(type), read_only(true), requires_valid_transaction(true), allow_stream_result(false) {
 }

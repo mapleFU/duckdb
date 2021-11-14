@@ -165,6 +165,7 @@ void Binder::BindModifierTypes(BoundQueryNode &result, const vector<LogicalType>
 	}
 }
 
+// Bind 一个 Select.
 unique_ptr<BoundQueryNode> Binder::BindNode(SelectNode &statement) {
 	auto result = make_unique<BoundSelectNode>();
 	result->projection_index = GenerateTableIndex();
@@ -176,6 +177,7 @@ unique_ptr<BoundQueryNode> Binder::BindNode(SelectNode &statement) {
 	result->prune_index = GenerateTableIndex();
 
 	// first bind the FROM table statement
+	// bind 一个 from_table, 这是一个 TableRef, 所以可能很 sb.
 	result->from_table = Bind(*statement.from_table);
 
 	// bind the sample clause

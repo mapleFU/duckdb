@@ -330,9 +330,11 @@ void BindContext::AddTableFunction(idx_t index, const string &alias, const vecto
 	AddBinding(alias, make_unique<TableBinding>(alias, types, names, get, index));
 }
 
+// 内部会处理一些 alias.
 static string AddColumnNameToBinding(const string &base_name, case_insensitive_set_t &current_names) {
 	idx_t index = 1;
 	string name = base_name;
+	// 尝试加到 Column
 	while (current_names.find(name) != current_names.end()) {
 		name = base_name + ":" + to_string(index++);
 	}
@@ -347,12 +349,14 @@ vector<string> BindContext::AliasColumnNames(const string &table_name, const vec
 		throw BinderException("table \"%s\" has %lld columns available but %lld columns specified", table_name,
 		                      names.size(), column_aliases.size());
 	}
+	// Name 维护的一个集合, 用来判断冲突(为啥不用 set...)
 	case_insensitive_set_t current_names;
 	// use any provided column aliases first
 	for (idx_t i = 0; i < column_aliases.size(); i++) {
 		result.push_back(AddColumnNameToBinding(column_aliases[i], current_names));
 	}
 	// if not enough aliases were provided, use the default names for remaining columns
+	// 对剩下的列做处理.
 	for (idx_t i = column_aliases.size(); i < names.size(); i++) {
 		result.push_back(AddColumnNameToBinding(names[i], current_names));
 	}

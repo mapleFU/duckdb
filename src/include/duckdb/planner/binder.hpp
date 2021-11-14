@@ -53,6 +53,8 @@ struct CorrelatedColumnInfo {
   The binder is responsible for binding tables and columns to actual physical
   tables and columns in the catalog. In the process, it also resolves types of
   all expressions.
+
+  Binder 访问 Catalog, 把 SQL 绑定到实际的逻辑上.
 */
 class Binder : public std::enable_shared_from_this<Binder> {
 	friend class ExpressionBinder;

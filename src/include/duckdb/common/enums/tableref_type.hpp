@@ -14,6 +14,9 @@ namespace duckdb {
 
 //===--------------------------------------------------------------------===//
 // Table Reference Types
+//
+// 可以是 BaseTable, 也可以是各种 Join(CROSS_PRODUCT, JOIN).
+// 这里还支持了 EXPRESSION_LIST, CTE.
 //===--------------------------------------------------------------------===//
 enum class TableReferenceType : uint8_t {
 	INVALID = 0,         // invalid table reference type

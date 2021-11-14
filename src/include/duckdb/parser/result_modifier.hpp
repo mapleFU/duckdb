@@ -18,6 +18,7 @@ namespace duckdb {
 enum ResultModifierType : uint8_t { LIMIT_MODIFIER = 1, ORDER_MODIFIER = 2, DISTINCT_MODIFIER = 3 };
 
 //! A ResultModifier
+//! 对结果进行变更, 可以是 LIMIT, ORDER, DISTINCT. 这里没有实现任何的逻辑, 只是作为了 parser 的一部分.
 class ResultModifier {
 public:
 	explicit ResultModifier(ResultModifierType type) : type(type) {

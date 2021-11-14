@@ -78,6 +78,7 @@ BoundStatement Binder::Bind(SQLStatement &statement) {
 
 unique_ptr<BoundQueryNode> Binder::BindNode(QueryNode &node) {
 	// first we visit the set of CTEs and add them to the bind context
+	// 先访问 CTE.
 	for (auto &cte_it : node.cte_map) {
 		AddCTE(cte_it.first, cte_it.second.get());
 	}
@@ -127,6 +128,7 @@ unique_ptr<BoundTableRef> Binder::Bind(TableRef &ref) {
 	unique_ptr<BoundTableRef> result;
 	switch (ref.type) {
 	case TableReferenceType::BASE_TABLE:
+		// BaseTable 直接 Bind 一个 Ref
 		result = Bind((BaseTableRef &)ref);
 		break;
 	case TableReferenceType::CROSS_PRODUCT:

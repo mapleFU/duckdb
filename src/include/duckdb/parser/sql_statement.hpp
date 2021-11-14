@@ -22,6 +22,7 @@ public:
 	}
 
 	//! The statement type
+	//! 可以是 Select, Insert, Update 等等.
 	StatementType type;
 	//! The statement location within the query string
 	idx_t stmt_location;
@@ -30,6 +31,7 @@ public:
 	//! The number of prepared statement parameters (if any)
 	idx_t n_param;
 	//! The query text that corresponds to this SQL statement
+	//! 这个 query 的内容.
 	string query;
 
 public:

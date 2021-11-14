@@ -61,10 +61,12 @@ unique_ptr<BoundTableRef> Binder::Bind(BaseTableRef &ref) {
 	}
 	// not a CTE
 	// extract a table or view from the catalog
+	// 从 Catalog 里面找到 Table or View, 类型是 CatalogEntry.
 	auto table_or_view =
 	    Catalog::GetCatalog(context).GetEntry(context, CatalogType::TABLE_ENTRY, ref.schema_name, ref.table_name,
 	                                          ref.schema_name.empty() ? true : false, error_context);
 	if (!table_or_view) {
+		// TODO(mwish): 这段我没看太懂.
 		// table could not be found: try to bind a replacement scan
 		auto &config = DBConfig::GetConfig(context);
 		for (auto &scan : config.replacement_scans) {
@@ -86,14 +88,18 @@ unique_ptr<BoundTableRef> Binder::Bind(BaseTableRef &ref) {
 		auto table = (TableCatalogEntry *)table_or_view;
 
 		auto scan_function = TableScanFunction::GetFunction();
+		// 需要 bind 的 TblScan.
 		auto bind_data = make_unique<TableScanBindData>(table);
 		auto alias = ref.alias.empty() ? ref.table_name : ref.alias;
-		vector<LogicalType> table_types;
+		vector<LogicalType> table_types; // 列的逻辑类型.
+
+		// 话说, 这两边不一致也没关系的吧...
 		vector<string> table_names;
 		for (auto &col : table->columns) {
 			table_types.push_back(col.type);
 			table_names.push_back(col.name);
 		}
+		// 把 tables_names 绑定到 alias 上, 这个只是指导要访问哪些列.
 		table_names = BindContext::AliasColumnNames(alias, table_names, ref.column_name_alias);
 
 		auto logical_get =

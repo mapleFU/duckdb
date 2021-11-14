@@ -19,6 +19,9 @@ class SQLStatement;
 struct PragmaInfo;
 
 //! Pragma handler is responsible for converting certain pragma statements into new queries
+//!
+//! https://www.sqlite.org/pragma.html
+//! 感觉是 SQLite 内部的插件
 class PragmaHandler {
 public:
 	explicit PragmaHandler(ClientContext &context);

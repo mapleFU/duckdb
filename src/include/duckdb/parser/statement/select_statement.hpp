@@ -25,6 +25,7 @@ public:
 	}
 
 	//! The main query node
+	//! QueryNode, 即查询. 这里可以是 Select 等.
 	unique_ptr<QueryNode> node;
 
 public:
