@@ -23,6 +23,7 @@ enum QueryNodeType : uint8_t {
 	RECURSIVE_CTE_NODE = 4
 };
 
+// 查询节点的类型
 class QueryNode {
 public:
 	explicit QueryNode(QueryNodeType type) : type(type) {
@@ -33,6 +34,7 @@ public:
 	//! The type of the query node, either SetOperation or Select
 	QueryNodeType type;
 	//! The set of result modifiers associated with this query node
+	//! modifier 包括 OrderBy 等,
 	vector<unique_ptr<ResultModifier>> modifiers;
 	//! CTEs (used by SelectNode and SetOperationNode)
 	unordered_map<string, unique_ptr<CommonTableExpressionInfo>> cte_map;

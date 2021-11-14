@@ -24,14 +24,17 @@ enum class AggregateHandling : uint8_t {
 };
 
 //! SelectNode represents a standard SELECT statement
+//! 这里没有处理 orderby 之类的东西，看来是丢给上层处理了.
 class SelectNode : public QueryNode {
 public:
 	SelectNode() : QueryNode(QueryNodeType::SELECT_NODE), aggregate_handling(AggregateHandling::STANDARD_HANDLING) {
 	}
 
 	//! The projection list
+	//! 对应的投影列.
 	vector<unique_ptr<ParsedExpression>> select_list;
 	//! The FROM clause
+	//! FromTable, 用 Ref 的形式表示
 	unique_ptr<TableRef> from_table;
 	//! The WHERE clause
 	unique_ptr<ParsedExpression> where_clause;
