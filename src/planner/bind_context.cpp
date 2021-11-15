@@ -316,6 +316,7 @@ void BindContext::AddBinding(const string &alias, unique_ptr<Binding> binding) {
 	if (bindings.find(alias) != bindings.end()) {
 		throw BinderException("Duplicate alias \"%s\" in query!", alias);
 	}
+	// 添加到 bindings_list 的 kv 中.
 	bindings_list.emplace_back(alias, binding.get());
 	bindings[alias] = move(binding);
 }
@@ -342,6 +343,7 @@ static string AddColumnNameToBinding(const string &base_name, case_insensitive_s
 	return name;
 }
 
+// TODO(mwish): making this a const fn.
 vector<string> BindContext::AliasColumnNames(const string &table_name, const vector<string> &names,
                                              const vector<string> &column_aliases) {
 	vector<string> result;
@@ -349,7 +351,7 @@ vector<string> BindContext::AliasColumnNames(const string &table_name, const vec
 		throw BinderException("table \"%s\" has %lld columns available but %lld columns specified", table_name,
 		                      names.size(), column_aliases.size());
 	}
-	// Name 维护的一个集合, 用来判断冲突(为啥不用 set...)
+	// Name 维护的一个集合, 用来判断冲突
 	case_insensitive_set_t current_names;
 	// use any provided column aliases first
 	for (idx_t i = 0; i < column_aliases.size(); i++) {
@@ -357,6 +359,8 @@ vector<string> BindContext::AliasColumnNames(const string &table_name, const vec
 	}
 	// if not enough aliases were provided, use the default names for remaining columns
 	// 对剩下的列做处理.
+	// 这里逻辑是这样的, 如果 column_aliases.empty, 继续用 names 推进, 这里绑定了访问的方式.
+	// 这里维护的是单表的 names, 理论上这里内部是不会变化的.
 	for (idx_t i = column_aliases.size(); i < names.size(); i++) {
 		result.push_back(AddColumnNameToBinding(names[i], current_names));
 	}

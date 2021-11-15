@@ -20,6 +20,7 @@ class PhysicalOperator;
 class SQLStatement;
 
 //! Prepare 的结果, 包含 SQL 的基本逻辑?
+//! 这个应该是已 Prepare 的 Data?
 class PreparedStatementData {
 public:
 	DUCKDB_API explicit PreparedStatementData(StatementType type);

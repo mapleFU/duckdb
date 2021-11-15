@@ -84,26 +84,32 @@ unique_ptr<BoundTableRef> Binder::Bind(BaseTableRef &ref) {
 	switch (table_or_view->type) {
 	case CatalogType::TABLE_ENTRY: {
 		// base table: create the BoundBaseTableRef node
+		// 需要生成一个 TableIndex.
 		auto table_index = GenerateTableIndex();
 		auto table = (TableCatalogEntry *)table_or_view;
 
 		auto scan_function = TableScanFunction::GetFunction();
 		// 需要 bind 的 TblScan.
 		auto bind_data = make_unique<TableScanBindData>(table);
-		auto alias = ref.alias.empty() ? ref.table_name : ref.alias;
 		vector<LogicalType> table_types; // 列的逻辑类型.
 
-		// 话说, 这两边不一致也没关系的吧...
+		// 遍历所有 Column
 		vector<string> table_names;
 		for (auto &col : table->columns) {
 			table_types.push_back(col.type);
 			table_names.push_back(col.name);
 		}
-		// 把 tables_names 绑定到 alias 上, 这个只是指导要访问哪些列.
+		// Table 的名称.
+		auto alias = ref.alias.empty() ? ref.table_name : ref.alias;
+		// 把 tables_names 绑定到 alias 上, 然后生成唯一的 column_name, 这个只是指导要访问哪些列.
+		// 假设没有 `column_name_alias`
 		table_names = BindContext::AliasColumnNames(alias, table_names, ref.column_name_alias);
 
+		// 添加一个 TableScan.
 		auto logical_get =
 		    make_unique<LogicalGet>(table_index, scan_function, move(bind_data), table_types, table_names);
+		// 根据 inc 生成的 table_index, alias, types, 和表访问方法.
+		// 这里会添加一个 full scan
 		bind_context.AddBaseTable(table_index, alias, table_names, table_types, *logical_get);
 		return make_unique_base<BoundTableRef, BoundBaseTableRef>(table, move(logical_get));
 	}

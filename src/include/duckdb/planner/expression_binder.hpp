@@ -48,6 +48,7 @@ struct BindResult {
 	string error;
 };
 
+//! ExpressionBinder 会给 ParedExpression 转成 Expression
 class ExpressionBinder {
 public:
 	ExpressionBinder(Binder &binder, ClientContext &context, bool replace_binder = false);

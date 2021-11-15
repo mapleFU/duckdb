@@ -19,6 +19,7 @@ unique_ptr<LogicalOperator> Binder::PlanFilter(unique_ptr<Expression> condition,
 unique_ptr<LogicalOperator> Binder::CreatePlan(BoundSelectNode &statement) {
 	unique_ptr<LogicalOperator> root;
 	D_ASSERT(statement.from_table);
+	// 拿到扫表的方法.
 	root = CreatePlan(*statement.from_table);
 	D_ASSERT(root);
 
@@ -27,6 +28,7 @@ unique_ptr<LogicalOperator> Binder::CreatePlan(BoundSelectNode &statement) {
 		root = make_unique<LogicalSample>(move(statement.sample_options), move(root));
 	}
 
+	// 对 condition 创建 Filter.
 	if (statement.where_clause) {
 		root = PlanFilter(move(statement.where_clause), move(root));
 	}

@@ -5,7 +5,7 @@
 namespace duckdb {
 
 BoundStatement Binder::Bind(SelectStatement &stmt) {
-	this->allow_stream_result = true;
+	this->allow_stream_result = true; // TODO(mwish): why?
 	return Bind(*stmt.node);
 }
 

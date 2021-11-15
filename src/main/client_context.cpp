@@ -177,6 +177,7 @@ shared_ptr<PreparedStatementData> ClientContext::CreatePreparedStatement(ClientC
 
 	profiler->StartPhase("planner");
 	Planner planner(*this);
+	// 创建 LogicalPlan
 	planner.CreatePlan(move(statement));
 	D_ASSERT(planner.plan);
 	profiler->EndPhase();
@@ -199,6 +200,7 @@ shared_ptr<PreparedStatementData> ClientContext::CreatePreparedStatement(ClientC
 	if (enable_optimizer) {
 		profiler->StartPhase("optimizer");
 		Optimizer optimizer(*planner.binder, *this);
+		// Optimize 拿到的还是个 Logical Plan.
 		plan = optimizer.Optimize(move(plan));
 		D_ASSERT(plan);
 		profiler->EndPhase();
@@ -241,6 +243,7 @@ unique_ptr<QueryResult> ClientContext::ExecutePreparedStatement(ClientContextLoc
 	}
 
 	// bind the bound values before execution
+	// 对 statement(PreparedStatementData) 调用 Bind, 这里把 Prepare 产生的 {} 做替换.
 	statement.Bind(move(bound_values));
 
 	bool create_stream_result = statement.allow_stream_result && allow_stream_result;
@@ -407,6 +410,7 @@ unique_ptr<QueryResult> ClientContext::RunStatementInternal(ClientContextLock &l
 	// 准备执行, 拿到 expression.
 	auto prepared = CreatePreparedStatement(lock, query, move(statement));
 	// by default, no values are bound
+	// 在非 Prepared 的情况下，这里是空的.
 	vector<Value> bound_values;
 	// execute the prepared statement
 	return ExecutePreparedStatement(lock, query, move(prepared), move(bound_values), allow_stream_result);

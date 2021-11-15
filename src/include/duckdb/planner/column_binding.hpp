@@ -13,6 +13,7 @@
 
 namespace duckdb {
 
+//! 对列的 binding
 struct ColumnBinding {
 	idx_t table_index;
 	idx_t column_index;

@@ -65,7 +65,8 @@ public:
 	static shared_ptr<Binder> CreateBinder(ClientContext &context, Binder *parent = nullptr, bool inherit_ctes = true);
 
 	//! The client context
-	ClientContext &context;
+	ClientContext &context; // Binder 初始化的内容.
+
 	//! A mapping of names to common table expressions
 	case_insensitive_map_t<CommonTableExpressionInfo *> CTE_bindings;
 	//! The CTEs that have already been bound

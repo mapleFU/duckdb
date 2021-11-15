@@ -107,6 +107,7 @@ BoundStatement Binder::Bind(QueryNode &node) {
 	result.types = bound_node->types;
 
 	// and plan it
+	// Binder 最后阶段会 CreatePlan, 创建一个 Operator.
 	result.plan = CreatePlan(*bound_node);
 	return result;
 }

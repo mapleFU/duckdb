@@ -18,7 +18,7 @@ void PreparedStatementData::Bind(vector<Value> values) {
 		throw BinderException("Parameter/argument count mismatch for prepared statement. Expected %llu, got %llu",
 		                      value_map.size(), values.size());
 	}
-	// bind the values
+	// bind the values, 这里 `value_map` 填进 value_map 就可以了
 	for (idx_t i = 0; i < values.size(); i++) {
 		auto it = value_map.find(i + 1);
 		if (it == value_map.end()) {

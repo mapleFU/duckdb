@@ -111,6 +111,7 @@ unique_ptr<BoundTableRef> Binder::Bind(JoinRef &ref) {
 	auto &right_binder = *result->right_binder;
 
 	result->type = ref.type;
+	// 先 binding 单个的两张表, bind 完两张表之后, 系统能够比较舒服的处理 condition 等内容了.
 	result->left = left_binder.Bind(*ref.left);
 	result->right = right_binder.Bind(*ref.right);
 
@@ -223,6 +224,7 @@ unique_ptr<BoundTableRef> Binder::Bind(JoinRef &ref) {
 	MoveCorrelatedExpressions(right_binder);
 	for (auto &condition : extra_conditions) {
 		if (ref.condition) {
+			// 用 conjunct 连接所有 expression.
 			ref.condition = make_unique<ConjunctionExpression>(ExpressionType::CONJUNCTION_AND, move(ref.condition),
 			                                                   move(condition));
 		} else {

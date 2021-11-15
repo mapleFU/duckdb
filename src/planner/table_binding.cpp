@@ -58,6 +58,7 @@ BindResult Binding::Bind(ColumnRefExpression &colref, idx_t depth) {
 TableBinding::TableBinding(const string &alias, vector<LogicalType> types_p, vector<string> names_p, LogicalGet &get,
                            idx_t index, bool add_row_id)
     : Binding(alias, move(types_p), move(names_p), index), get(get) {
+	// row_id 表示要添加第几行.
 	if (add_row_id) {
 		if (name_map.find("rowid") == name_map.end()) {
 			name_map["rowid"] = COLUMN_IDENTIFIER_ROW_ID;

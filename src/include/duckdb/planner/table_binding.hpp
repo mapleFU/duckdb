@@ -25,6 +25,8 @@ class TableFunctionCatalogEntry;
 class BoundTableFunction;
 
 //! A Binding represents a binding to a table, table-producing function or subquery with a specified table index.
+//!
+//! 对 Table 的 binding, 维护了表的全部内容.
 struct Binding {
 	Binding(const string &alias, vector<LogicalType> types, vector<string> names, idx_t index);
 	virtual ~Binding() = default;
@@ -52,6 +54,7 @@ struct TableBinding : public Binding {
 	             bool add_row_id = false);
 
 	//! the underlying LogicalGet
+	//! 保留了一些可供 pushdown 的信息.
 	LogicalGet &get;
 
 public:

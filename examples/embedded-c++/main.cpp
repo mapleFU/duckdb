@@ -8,6 +8,6 @@ int main() {
 
 	con.Query("CREATE TABLE integers(i INTEGER, v INTEGER)");
 	con.Query("INSERT INTO integers VALUES (3, 5), (4, 10)");
-	auto result = con.Query("SELECT v as v_a FROM integers");
+	auto result = con.Query("SELECT v as v_a FROM integers WHERE v > 5");
 	result->Print();
 }

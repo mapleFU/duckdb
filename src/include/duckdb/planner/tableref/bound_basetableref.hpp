@@ -15,6 +15,7 @@ namespace duckdb {
 class TableCatalogEntry;
 
 //! Represents a TableReference to a base table in the schema
+//! 绑定到 Table 上
 class BoundBaseTableRef : public BoundTableRef {
 public:
 	BoundBaseTableRef(TableCatalogEntry *table, unique_ptr<LogicalOperator> get)

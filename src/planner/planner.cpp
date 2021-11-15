@@ -26,6 +26,8 @@ void Planner::CreatePlan(SQLStatement &statement) {
 	// first bind the tables and columns to the catalog
 	context.profiler->StartPhase("binder");
 	binder->parameters = &bound_parameters;
+	// 把 SQLStatement 的结构换成结构化的内容.
+	// 这里 Statement 会转成 BoundStatement.
 	auto bound_statement = binder->Bind(statement);
 	context.profiler->EndPhase();
 

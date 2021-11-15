@@ -24,6 +24,7 @@ enum class AggregateHandling : uint8_t {
 };
 
 //! SelectNode represents a standard SELECT statement
+//! Select 的具体逻辑
 class SelectNode : public QueryNode {
 public:
 	SelectNode() : QueryNode(QueryNodeType::SELECT_NODE), aggregate_handling(AggregateHandling::STANDARD_HANDLING) {
