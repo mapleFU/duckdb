@@ -23,6 +23,8 @@ enum QueryNodeType : uint8_t {
 	RECURSIVE_CTE_NODE = 4
 };
 
+//! Parser 解析除的 Query, 可以是 `QueryNodeType` 中的, 直观来说就是:
+//! Select, Set, CTE, bound(这是什么?).
 class QueryNode {
 public:
 	explicit QueryNode(QueryNodeType type) : type(type) {
@@ -31,8 +33,10 @@ public:
 	}
 
 	//! The type of the query node, either SetOperation or Select
+	//! 描述的类型.
 	QueryNodeType type;
 	//! The set of result modifiers associated with this query node
+	//! Order/Unique 之类的 modifier
 	vector<unique_ptr<ResultModifier>> modifiers;
 	//! CTEs (used by SelectNode and SetOperationNode)
 	unordered_map<string, unique_ptr<CommonTableExpressionInfo>> cte_map;

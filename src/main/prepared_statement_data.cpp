@@ -4,6 +4,7 @@
 
 namespace duckdb {
 
+//! 基本上就是针对 stmt 类型 xjb 初始化.
 PreparedStatementData::PreparedStatementData(StatementType type)
     : statement_type(type), read_only(true), requires_valid_transaction(true), allow_stream_result(false) {
 }
@@ -17,7 +18,7 @@ void PreparedStatementData::Bind(vector<Value> values) {
 		throw BinderException("Parameter/argument count mismatch for prepared statement. Expected %llu, got %llu",
 		                      value_map.size(), values.size());
 	}
-	// bind the values
+	// bind the values, 这里 `value_map` 填进 value_map 就可以了
 	for (idx_t i = 0; i < values.size(); i++) {
 		auto it = value_map.find(i + 1);
 		if (it == value_map.end()) {

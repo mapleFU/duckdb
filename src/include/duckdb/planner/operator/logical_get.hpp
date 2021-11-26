@@ -14,7 +14,9 @@
 
 namespace duckdb {
 
-//! LogicalGet represents a scan operation from a data source
+//! LogicalGet represents a scan operation from a data source.
+//! 对 Table 的 Scan, 这里重要的是带有了 names/column_ids 等.
+//! 这个方法是可以被裁剪下推的.
 class LogicalGet : public LogicalOperator {
 public:
 	LogicalGet(idx_t table_index, TableFunction function, unique_ptr<FunctionData> bind_data,
@@ -33,6 +35,7 @@ public:
 	//! Bound column IDs
 	vector<column_t> column_ids;
 	//! Filters pushed down for table scan
+	//! 表访问的 Filter.
 	TableFilterSet table_filters;
 
 	string GetName() const override;

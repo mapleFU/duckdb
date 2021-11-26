@@ -176,6 +176,7 @@ unique_ptr<BoundQueryNode> Binder::BindNode(SelectNode &statement) {
 	result->prune_index = GenerateTableIndex();
 
 	// first bind the FROM table statement
+	// bind 一个 from_table, 这是一个 TableRef, 所以可能很 sb.
 	result->from_table = Bind(*statement.from_table);
 
 	// bind the sample clause

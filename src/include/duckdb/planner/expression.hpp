@@ -15,6 +15,8 @@ namespace duckdb {
 class BaseStatistics;
 
 //!  The Expression class represents a bound Expression with a return type
+//!
+//! BoundExpression_ 都继承自 Expression. 它们原本是 ParsedExpression.
 class Expression : public BaseExpression {
 public:
 	Expression(ExpressionType type, ExpressionClass expression_class, LogicalType return_type);

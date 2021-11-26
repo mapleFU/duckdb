@@ -28,6 +28,7 @@ protected:
 private:
 	BindResult BindColumnRef(unique_ptr<ParsedExpression> *expr_ptr, idx_t depth, bool root_expression);
 
+	// ColumnAliasBinder 处理一些 alias
 	ColumnAliasBinder *column_alias_binder;
 };
 

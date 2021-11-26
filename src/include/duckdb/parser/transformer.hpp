@@ -30,6 +30,8 @@ struct GroupingExpressionMap;
 
 //! The transformer class is responsible for transforming the internal Postgres
 //! parser representation into the DuckDB representation
+//!
+//! Transformer 从 PG 的格式更新到 DuckDB 的 internal format.
 class Transformer {
 	static constexpr const idx_t DEFAULT_MAX_EXPRESSION_DEPTH = 1000;
 

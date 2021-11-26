@@ -14,6 +14,7 @@ namespace duckdb {
 
 struct BoundStatement {
 	unique_ptr<LogicalOperator> plan;
+	// 返回的类型, 和名称.
 	vector<LogicalType> types;
 	vector<string> names;
 };

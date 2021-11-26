@@ -24,11 +24,16 @@ public:
 	virtual ~TableRef() {
 	}
 
+	//! 各种类型的 type, 可以是一个 Join, CTE 等.
 	TableReferenceType type;
+	//! 每个 table 拥有一个 Alias.
 	string alias;
 	//! Sample options (if any)
+	//! SQL 的 sample.
 	unique_ptr<SampleOptions> sample;
 	//! The location in the query (if any)
+	//! 这个有啥意义吗...好像是在 SQL 中给报错信息准备的.
+	//! https://www.postgresql.org/docs/9.5/sql-syntax-lexical.html
 	idx_t query_location = INVALID_INDEX;
 
 public:

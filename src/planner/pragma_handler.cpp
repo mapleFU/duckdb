@@ -33,6 +33,7 @@ void PragmaHandler::HandlePragmaStatementsInternal(vector<unique_ptr<SQLStatemen
 				// insert the new statements and remove the old statement
 				// FIXME: off by one here maybe?
 				for (idx_t j = 0; j < parser.statements.size(); j++) {
+					// 被重写的 Query 加入 stmt.
 					new_statements.push_back(move(parser.statements[j]));
 				}
 				continue;
@@ -59,6 +60,7 @@ void PragmaHandler::HandlePragmaStatements(ClientContextLock &lock, vector<uniqu
 	context.RunFunctionInTransactionInternal(lock, [&]() { HandlePragmaStatementsInternal(statements); });
 }
 
+//! HandlePragma, 可能会重写 Query
 string PragmaHandler::HandlePragma(SQLStatement *statement) { // PragmaInfo &info
 	auto info = *((PragmaStatement &)*statement).info;
 	auto entry =

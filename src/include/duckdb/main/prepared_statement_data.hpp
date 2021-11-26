@@ -19,6 +19,8 @@ class CatalogEntry;
 class PhysicalOperator;
 class SQLStatement;
 
+//! Prepare 的结果, 包含 SQL 的基本逻辑?
+//! 这个应该是已 Prepare 的 Data?
 class PreparedStatementData {
 public:
 	DUCKDB_API explicit PreparedStatementData(StatementType type);
@@ -26,15 +28,20 @@ public:
 
 	StatementType statement_type;
 	//! The unbound SQL statement that was prepared
+	//! https://stackoverflow.com/questions/3068142/what-is-an-unbounded-query
 	unique_ptr<SQLStatement> unbound_statement;
 	//! The fully prepared physical plan of the prepared statement
+	//! 具体的 Physical Operator.
 	unique_ptr<PhysicalOperator> plan;
 	//! The map of parameter index to the actual value entry
+	//! idx->Prepare 结果的 mapping.
 	unordered_map<idx_t, vector<unique_ptr<Value>>> value_map;
 
 	//! The result names of the transaction
+	//! 投影列的名字?
 	vector<string> names;
 	//! The result types of the transaction
+	//! 投影列的类型?
 	vector<LogicalType> types;
 
 	//! Whether or not the statement is a read-only statement, or whether it can result in changes to the database

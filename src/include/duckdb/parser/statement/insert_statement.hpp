@@ -13,11 +13,13 @@
 
 namespace duckdb {
 
+//! According to https://duckdb.org/docs/sql/statements/insert .
 class InsertStatement : public SQLStatement {
 public:
 	InsertStatement();
 
 	//! The select statement to insert from
+	//! Can be null.
 	unique_ptr<SelectStatement> select_statement;
 	//! Column names to insert into
 	vector<string> columns;

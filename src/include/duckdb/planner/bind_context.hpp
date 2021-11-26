@@ -35,6 +35,8 @@ struct UsingColumnSet {
 
 //! The BindContext object keeps track of all the tables and columns that are
 //! encountered during the binding process.
+//!
+//! Binder 的上下文.
 class BindContext {
 public:
 	//! Keep track of recursive CTE references
@@ -134,8 +136,10 @@ private:
 
 private:
 	//! The set of bindings
+	//! 实际存储的 binding.
 	case_insensitive_map_t<unique_ptr<Binding>> bindings;
 	//! The list of bindings in insertion order
+	//! 表访问的 binding 序列.
 	vector<std::pair<string, Binding *>> bindings_list;
 	//! The set of columns used in USING join conditions
 	case_insensitive_map_t<unordered_set<UsingColumnSet *>> using_columns;

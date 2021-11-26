@@ -199,6 +199,7 @@ struct list_entry_t {
 //===--------------------------------------------------------------------===//
 
 // taken from arrow's type.h
+// 用来实现的物理类型, port 自 Arrow.
 enum class PhysicalType : uint8_t {
 	/// A NULL type having no physical storage
 	NA = 0,
@@ -322,6 +323,8 @@ enum class PhysicalType : uint8_t {
 
 //===--------------------------------------------------------------------===//
 // SQL Types
+//
+// SQL 的标准类型.
 //===--------------------------------------------------------------------===//
 enum class LogicalTypeId : uint8_t {
 	INVALID = 0,

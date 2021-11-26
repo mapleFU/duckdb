@@ -53,6 +53,7 @@ public:
 	static vector<ColumnDefinition> ParseColumnList(const string &column_list);
 
 	//! The parsed SQL statements from an invocation to ParseQuery.
+	//! Parser parse 的结果.
 	vector<unique_ptr<SQLStatement>> statements;
 
 private:

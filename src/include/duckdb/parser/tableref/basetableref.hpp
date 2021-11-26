@@ -22,7 +22,9 @@ public:
 	string schema_name;
 	//! Table name
 	string table_name;
-	//! Alises for the column names
+	//! Aliases for the column names
+	//! SELECT * FROM tbl AS t1(a, b)
+	//! 这个时候才会使用 TableAlias.
 	vector<string> column_name_alias;
 
 public:
