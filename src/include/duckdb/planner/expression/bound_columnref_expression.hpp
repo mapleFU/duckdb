@@ -16,6 +16,8 @@ namespace duckdb {
 //! A BoundColumnRef expression represents a ColumnRef expression that was bound to an actual table and column index. It
 //! is not yet executable, however. The ColumnBindingResolver transforms the BoundColumnRefExpressions into
 //! BoundExpressions, which refer to indexes into the physical chunks that pass through the executor.
+//!
+//! 对列的引用的 binding.
 class BoundColumnRefExpression : public Expression {
 public:
 	BoundColumnRefExpression(LogicalType type, ColumnBinding binding, idx_t depth = 0);
@@ -25,6 +27,8 @@ public:
 	ColumnBinding binding;
 	//! The subquery depth (i.e. depth 0 = current query, depth 1 = parent query, depth 2 = parent of parent, etc...).
 	//! This is only non-zero for correlated expressions inside subqueries.
+	//!
+	//! 和子查询有关了
 	idx_t depth;
 
 public:

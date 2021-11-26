@@ -17,6 +17,7 @@ class BoundConstantExpression : public Expression {
 public:
 	explicit BoundConstantExpression(Value value);
 
+	//! Datum, 包含的具体的值.
 	Value value;
 
 public:

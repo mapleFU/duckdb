@@ -241,6 +241,7 @@ string ExpressionBinder::Bind(unique_ptr<ParsedExpression> *expr, idx_t depth, b
 	}
 }
 
+//! 给 ParsedExpression 绑定. (可能来自 SelectList).
 void ExpressionBinder::BindTableNames(Binder &binder, ParsedExpression &expr, unordered_map<string, idx_t> *alias_map) {
 	if (expr.type == ExpressionType::COLUMN_REF) {
 		auto &colref = (ColumnRefExpression &)expr;
@@ -253,6 +254,7 @@ void ExpressionBinder::BindTableNames(Binder &binder, ParsedExpression &expr, un
 				colref.table_name = binder.bind_context.GetMatchingBinding(colref.column_name);
 			}
 		}
+		// 从 binder 里面找到对应的 Column, 来进行绑定.
 		binder.bind_context.BindColumn(colref, 0);
 	} else if (expr.type == ExpressionType::POSITIONAL_REFERENCE) {
 		auto &ref = (PositionalReferenceExpression &)expr;
@@ -264,6 +266,8 @@ void ExpressionBinder::BindTableNames(Binder &binder, ParsedExpression &expr, un
 			}
 		}
 	}
+	// 对所有的子内容, 递归 bind.
+	// 比方说 2 * name, 那么右边进行 binding
 	ParsedExpressionIterator::EnumerateChildren(
 	    expr, [&](const ParsedExpression &child) { BindTableNames(binder, (ParsedExpression &)child, alias_map); });
 }

@@ -165,6 +165,7 @@ void Binder::BindModifierTypes(BoundQueryNode &result, const vector<LogicalType>
 	}
 }
 
+//! 对 SelectNode 进行 binding.
 unique_ptr<BoundQueryNode> Binder::BindNode(SelectNode &statement) {
 	auto result = make_unique<BoundSelectNode>();
 	result->projection_index = GenerateTableIndex();
@@ -176,7 +177,7 @@ unique_ptr<BoundQueryNode> Binder::BindNode(SelectNode &statement) {
 	result->prune_index = GenerateTableIndex();
 
 	// first bind the FROM table statement
-	// bind 一个 from_table, 这是一个 TableRef, 所以可能很 sb.
+	// bind 一个 from_table, 这是一个 TableRef, 所以可能很需要走一个复杂一些的流程.
 	result->from_table = Bind(*statement.from_table);
 
 	// bind the sample clause
@@ -185,26 +186,35 @@ unique_ptr<BoundQueryNode> Binder::BindNode(SelectNode &statement) {
 	}
 
 	// visit the select list and expand any "*" statements
+	// 这里是展开 '*' 的 ParsedExpression.
 	vector<unique_ptr<ParsedExpression>> new_select_list;
 	for (auto &select_element : statement.select_list) {
 		if (select_element->GetExpressionType() == ExpressionType::STAR) {
 			// * statement, expand to all columns from the FROM clause
+			// 如果是 * 的话, 用 `GenerateAllColumnExpressions` 来专程 SelectList.
 			bind_context.GenerateAllColumnExpressions((StarExpression &)*select_element, new_select_list);
 		} else {
 			// regular statement, add it to the list
 			new_select_list.push_back(move(select_element));
 		}
 	}
+	// SelList 是空的, 不管了.
 	if (new_select_list.empty()) {
 		throw BinderException("SELECT list is empty after resolving * expressions!");
 	}
+	// swap & rebuild.
+	// select_list 还是个 ParsedExpression.
 	statement.select_list = move(new_select_list);
 
 	// create a mapping of (alias -> index) and a mapping of (Expression -> index) for the SELECT list
+	// alias_map: (alias -> index).
+	// projection_map: (Expression -> index).
 	unordered_map<string, idx_t> alias_map;
 	expression_map_t<idx_t> projection_map;
 	for (idx_t i = 0; i < statement.select_list.size(); i++) {
 		auto &expr = statement.select_list[i];
+		// 拿到对应的名称, 进行 binding, 这个流程可能是递归的.
+		// 比如 2*x, 会递归处理 2 * x 和 (2), (x).
 		result->names.push_back(expr->GetName());
 		ExpressionBinder::BindTableNames(*this, *expr);
 		if (!expr->alias.empty()) {
@@ -219,6 +229,7 @@ unique_ptr<BoundQueryNode> Binder::BindNode(SelectNode &statement) {
 	// first visit the WHERE clause
 	// the WHERE clause happens before the GROUP BY, PROJECTION or HAVING clauses
 	if (statement.where_clause) {
+		// 对 WHERE clause 来 binding.
 		ColumnAliasBinder alias_binder(*result, alias_map);
 		WhereBinder where_binder(*this, context, &alias_binder);
 		unique_ptr<ParsedExpression> condition = move(statement.where_clause);
@@ -321,6 +332,7 @@ unique_ptr<BoundQueryNode> Binder::BindNode(SelectNode &statement) {
 	}
 
 	// now that the SELECT list is bound, we set the types of DISTINCT/ORDER BY expressions
+	// 最后 Bind modifier.
 	BindModifierTypes(*result, internal_sql_types, result->projection_index);
 	return move(result);
 }

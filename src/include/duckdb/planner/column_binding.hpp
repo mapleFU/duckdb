@@ -15,7 +15,9 @@ namespace duckdb {
 
 //! 对列的 binding
 struct ColumnBinding {
+	// 对应的 table_id.
 	idx_t table_index;
+	// 对应的 column_id.
 	idx_t column_index;
 
 	ColumnBinding() : table_index(INVALID_INDEX), column_index(INVALID_INDEX) {

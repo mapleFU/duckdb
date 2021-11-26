@@ -76,6 +76,8 @@ BoundStatement Binder::Bind(SQLStatement &statement) {
 	} // LCOV_EXCL_STOP
 }
 
+//! 将 QueryNode 进行 Binding.
+//! node 是一个多态的结构, 这里的绑定很奇怪, 就是会手动转子类 2333.
 unique_ptr<BoundQueryNode> Binder::BindNode(QueryNode &node) {
 	// first we visit the set of CTEs and add them to the bind context
 	// 先访问 CTE.
@@ -86,6 +88,7 @@ unique_ptr<BoundQueryNode> Binder::BindNode(QueryNode &node) {
 	unique_ptr<BoundQueryNode> result;
 	switch (node.type) {
 	case QueryNodeType::SELECT_NODE:
+		// 如果是 Select 的话
 		result = BindNode((SelectNode &)node);
 		break;
 	case QueryNodeType::RECURSIVE_CTE_NODE:
