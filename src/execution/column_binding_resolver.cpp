@@ -56,6 +56,7 @@ void ColumnBindingResolver::VisitOperator(LogicalOperator &op) {
 		return;
 	} else if (op.type == LogicalOperatorType::LOGICAL_GET) {
 		//! We first need to update the current set of bindings and then visit operator expressions
+		//! 最底层的递归基操作, 这里要处理对应的 operations.
 		bindings = op.GetColumnBindings();
 		VisitOperatorExpressions(op);
 		return;
@@ -69,12 +70,14 @@ void ColumnBindingResolver::VisitOperator(LogicalOperator &op) {
 	bindings = op.GetColumnBindings();
 }
 
+//! VisitReplace 是执行变化操作的成分, 这里替换了 `BoundColumnRefExpr` 的部分.
 unique_ptr<Expression> ColumnBindingResolver::VisitReplace(BoundColumnRefExpression &expr,
                                                            unique_ptr<Expression> *expr_ptr) {
 	D_ASSERT(expr.depth == 0);
 	// check the current set of column bindings to see which index corresponds to the column reference
 	for (idx_t i = 0; i < bindings.size(); i++) {
 		if (expr.binding == bindings[i]) {
+			// 找到对应的 binding 序列, 对应是返回值的第几个.
 			return make_unique<BoundReferenceExpression>(expr.alias, expr.return_type, i);
 		}
 	}

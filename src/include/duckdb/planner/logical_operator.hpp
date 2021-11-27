@@ -39,6 +39,7 @@ public:
 	//! The set of expressions contained within the operator, if any
 	vector<unique_ptr<Expression>> expressions;
 	//! The types returned by this logical operator. Set by calling LogicalOperator::ResolveTypes.
+	//! 在 ResolveTypes 调用的时候才获知.
 	vector<LogicalType> types;
 	//! Estimated Cardinality
 	idx_t estimated_cardinality = 0;

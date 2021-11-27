@@ -7,6 +7,7 @@
 
 namespace duckdb {
 
+//! TODO(mwish): 这啥啊...
 class DependencyExtractor : public LogicalOperatorVisitor {
 public:
 	explicit DependencyExtractor(unordered_set<CatalogEntry *> &dependencies) : dependencies(dependencies) {
@@ -34,6 +35,7 @@ unique_ptr<PhysicalOperator> PhysicalPlanGenerator::CreatePlan(unique_ptr<Logica
 
 	// now resolve types of all the operators
 	context.profiler->StartPhase("resolve_types");
+	// 拿到返回值类型.
 	op->ResolveOperatorTypes();
 	context.profiler->EndPhase();
 

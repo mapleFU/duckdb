@@ -213,6 +213,7 @@ shared_ptr<PreparedStatementData> ClientContext::CreatePreparedStatement(ClientC
 	profiler->StartPhase("physical_planner");
 	// now convert logical query plan into a physical query plan
 	PhysicalPlanGenerator physical_planner(*this);
+	// 构建 Physical Plan
 	auto physical_plan = physical_planner.CreatePlan(move(plan));
 	profiler->EndPhase();
 
