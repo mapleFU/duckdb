@@ -7,7 +7,9 @@
 namespace duckdb {
 
 void LogicalOperatorVisitor::VisitOperator(LogicalOperator &op) {
+	// 先递归处理所有子节点
 	VisitOperatorChildren(op);
+	// 再处理自己的 Expression.
 	VisitOperatorExpressions(op);
 }
 
@@ -30,8 +32,10 @@ void LogicalOperatorVisitor::EnumerateExpressions(LogicalOperator &op,
 		break;
 	}
 	case LogicalOperatorType::LOGICAL_ORDER_BY: {
+		// 处理 Order By 的 Expression.
 		auto &order = (LogicalOrder &)op;
 		for (auto &node : order.orders) {
+			// 裁剪 orderby 的 expression.
 			callback(&node.expression);
 		}
 		break;
@@ -96,6 +100,7 @@ void LogicalOperatorVisitor::EnumerateExpressions(LogicalOperator &op,
 }
 
 void LogicalOperatorVisitor::VisitOperatorExpressions(LogicalOperator &op) {
+	// 去扫所有的 Expression
 	LogicalOperatorVisitor::EnumerateExpressions(op, [&](unique_ptr<Expression> *child) { VisitExpression(child); });
 }
 

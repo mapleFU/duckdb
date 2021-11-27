@@ -36,6 +36,7 @@ public:
 	};
 
 private:
+	// 需要下推的 Filter.
 	vector<unique_ptr<Filter>> filters;
 	Optimizer &optimizer;
 

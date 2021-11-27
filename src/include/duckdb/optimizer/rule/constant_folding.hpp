@@ -12,7 +12,8 @@
 
 namespace duckdb {
 
-// Fold any constant scalar expressions into a single constant (i.e. [2 + 2] => [4], [2 = 2] => [True], etc...)
+//! Fold any constant scalar expressions into a single constant (i.e. [2 + 2] => [4], [2 = 2] => [True], etc...)
+//! 牛逼我靠, 常量折叠
 class ConstantFoldingRule : public Rule {
 public:
 	explicit ConstantFoldingRule(ExpressionRewriter &rewriter);

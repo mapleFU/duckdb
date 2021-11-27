@@ -33,6 +33,7 @@ unique_ptr<Expression> ConstantFoldingRule::Apply(LogicalOperator &op, vector<Ex
 	// use an ExpressionExecutor to execute the expression
 
 	Value result_value;
+	//尝试求值
 	if (!ExpressionExecutor::TryEvaluateScalar(*root, result_value)) {
 		return nullptr;
 	}

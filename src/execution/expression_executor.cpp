@@ -76,6 +76,7 @@ void ExpressionExecutor::ExecuteExpression(idx_t expr_idx, Vector &result) {
 	states[expr_idx]->profiler.EndSample(chunk ? chunk->size() : 0);
 }
 
+//! 这里有个 ExpressionExecutor, 尝试很暴力的求值. 但是我还没看 Executor.
 Value ExpressionExecutor::EvaluateScalar(const Expression &expr) {
 	D_ASSERT(expr.IsFoldable());
 	// use an ExpressionExecutor to execute the expression

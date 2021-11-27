@@ -147,6 +147,8 @@ enum class ExpressionType : uint8_t {
 
 //===--------------------------------------------------------------------===//
 // Expression Class
+//
+// 感觉这个不是现有 ExpressionClass 再去写代码, 是反过来的, 先有 Class, 再处理一些 Bound/Unbound Expr.
 //===--------------------------------------------------------------------===//
 enum class ExpressionClass : uint8_t {
 	INVALID = 0,

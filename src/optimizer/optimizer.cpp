@@ -24,6 +24,7 @@
 namespace duckdb {
 
 Optimizer::Optimizer(Binder &binder, ClientContext &context) : context(context), binder(binder), rewriter(context) {
+	// 在这个地方, 初始化 rewriter 的规则.
 	rewriter.rules.push_back(make_unique<ConstantFoldingRule>(rewriter));
 	rewriter.rules.push_back(make_unique<DistributivityRule>(rewriter));
 	rewriter.rules.push_back(make_unique<ArithmeticSimplificationRule>(rewriter));
@@ -47,6 +48,7 @@ Optimizer::Optimizer(Binder &binder, ClientContext &context) : context(context),
 
 void Optimizer::RunOptimizer(OptimizerType type, const std::function<void()> &callback) {
 	auto &config = DBConfig::GetConfig(context);
+	// 可能 config 里面 disable 了哪一项.
 	if (config.disabled_optimizers.find(type) != config.disabled_optimizers.end()) {
 		// optimizer is marked as disabled: skip
 		return;
@@ -62,6 +64,8 @@ unique_ptr<LogicalOperator> Optimizer::Optimize(unique_ptr<LogicalOperator> plan
 	RunOptimizer(OptimizerType::EXPRESSION_REWRITER, [&]() { rewriter.VisitOperator(*plan); });
 
 	// perform filter pullup
+	//
+	// 我目测了一下, 好像只有 set 之类的情况会 pullup.
 	RunOptimizer(OptimizerType::FILTER_PULLUP, [&]() {
 		FilterPullup filter_pullup;
 		plan = filter_pullup.Rewrite(move(plan));
@@ -85,6 +89,8 @@ unique_ptr<LogicalOperator> Optimizer::Optimize(unique_ptr<LogicalOperator> plan
 
 	// then we perform the join ordering optimization
 	// this also rewrites cross products + filters into joins and performs filter pushdowns
+	//
+	// 这里的逻辑应该参考了 dpccp 那篇.
 	RunOptimizer(OptimizerType::JOIN_ORDER, [&]() {
 		JoinOrderOptimizer optimizer(context);
 		plan = optimizer.Optimize(move(plan));

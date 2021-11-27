@@ -15,7 +15,7 @@
 namespace duckdb {
 class ClientContext;
 
-//! The ExpressionRewriter performs a set of fixed rewrite rules on the expressions that occur in a SQL statement
+//! The ExpressionRewriter performs a set of fixed rewrite rules on the expressions that occur in a SQL statement.
 class ExpressionRewriter : public LogicalOperatorVisitor {
 public:
 	explicit ExpressionRewriter(ClientContext &context) : context(context) {

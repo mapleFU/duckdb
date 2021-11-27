@@ -32,6 +32,8 @@ unique_ptr<Expression> ExpressionRewriter::ApplyRules(LogicalOperator &op, const
 	}
 	// no changes could be made to this node
 	// recursively run on the children of this node
+	//
+	// 对于一个给定的 expression, 调用 ApplyRules.
 	ExpressionIterator::EnumerateChildren(*expr, [&](unique_ptr<Expression> &child) {
 		child = ExpressionRewriter::ApplyRules(op, rules, move(child), changes_made);
 	});

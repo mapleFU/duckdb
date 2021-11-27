@@ -21,6 +21,7 @@ public:
 	    : LogicalOperator(LogicalOperatorType::LOGICAL_ORDER_BY), orders(move(orders)) {
 	}
 
+	// ORDER BY (e1, e2 * 2) ...
 	vector<BoundOrderByNode> orders;
 
 	string ParamsToString() const override {

@@ -46,6 +46,7 @@ bool Expression::HasSideEffects() const {
 	return has_side_effects;
 }
 
+// 如果所有的 child 没有标记非 foldable, 那么可以尝试 fold.
 bool Expression::IsFoldable() const {
 	bool is_foldable = true;
 	ExpressionIterator::EnumerateChildren(*this, [&](const Expression &child) {

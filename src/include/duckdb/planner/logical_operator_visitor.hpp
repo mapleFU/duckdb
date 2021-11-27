@@ -17,6 +17,8 @@
 namespace duckdb {
 //! The LogicalOperatorVisitor is an abstract base class that implements the
 //! Visitor pattern on LogicalOperator.
+//!
+//! 定义成了 Visitor 的形式，便于高效访问
 class LogicalOperatorVisitor {
 public:
 	virtual ~LogicalOperatorVisitor() {};
