@@ -12,6 +12,7 @@ buffer_ptr<VectorBuffer> VectorBuffer::CreateStandardVector(PhysicalType type, i
 	return make_buffer<VectorBuffer>(capacity * GetTypeIdSize(type));
 }
 
+//! TODO(mwish): Constant 是怎么处理的?
 buffer_ptr<VectorBuffer> VectorBuffer::CreateConstantVector(PhysicalType type) {
 	return make_buffer<VectorBuffer>(GetTypeIdSize(type));
 }

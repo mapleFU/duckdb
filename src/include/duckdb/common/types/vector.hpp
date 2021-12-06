@@ -176,11 +176,16 @@ protected:
 	//! A pointer to the data.
 	data_ptr_t data;
 	//! The validity mask of the vector
+	//!
+	//! null mask. 为什么他妈的叫 validity?
 	ValidityMask validity;
 	//! The main buffer holding the data of the vector
+	//! 内容的主要存放 Buffer.
 	buffer_ptr<VectorBuffer> buffer;
 	//! The buffer holding auxiliary data of the vector
 	//! e.g. a string vector uses this to store strings
+	//!
+	//! 对于 String 等内容丢到对应的 aux 里了。
 	buffer_ptr<VectorBuffer> auxiliary;
 };
 
@@ -194,6 +199,12 @@ public:
 	Vector data;
 };
 
+//! 与其说是 ConstantVector, 不如说是一个相关的辅助函数.
+//! 静态的:
+//! 1. 提供 GetData, 拿到对应的内容 T[].
+//! 2. 判断是否是 Null.
+//!
+//! 这个 Constant 是什么 jb 意思？
 struct ConstantVector {
 	static inline const_data_ptr_t GetData(const Vector &vector) {
 		D_ASSERT(vector.GetVectorType() == VectorType::CONSTANT_VECTOR ||
@@ -249,6 +260,7 @@ struct DictionaryVector {
 	}
 };
 
+//!
 struct FlatVector {
 	static inline data_ptr_t GetData(Vector &vector) {
 		return ConstantVector::GetData(vector);

@@ -15,6 +15,8 @@ namespace duckdb {
 //! A string heap is the owner of a set of strings, strings can be inserted into
 //! it On every insert, a pointer to the inserted string is returned The
 //! returned pointer will remain valid until the StringHeap is destroyed
+//!
+//! 我怎么感觉我在公司代码里也造过这个 jb.
 class StringHeap {
 public:
 	StringHeap();

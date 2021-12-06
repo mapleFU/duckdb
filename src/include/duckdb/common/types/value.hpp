@@ -20,6 +20,8 @@ class Serializer;
 
 //! The Value object holds a single arbitrary value of any type that can be
 //! stored in the database.
+//!
+//! Value 是一个 Scalar Value, 表示单个值.
 class Value {
 	friend class Vector;
 
