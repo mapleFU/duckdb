@@ -30,6 +30,7 @@ void DataChunk::InitializeEmpty(const vector<LogicalType> &types) {
 	D_ASSERT(data.empty());   // can only be initialized once
 	D_ASSERT(!types.empty()); // empty chunk not allowed
 	for (idx_t i = 0; i < types.size(); i++) {
+		// 创建的都是 flat vector.
 		data.emplace_back(Vector(types[i], nullptr));
 	}
 }
@@ -39,6 +40,7 @@ void DataChunk::Initialize(const vector<LogicalType> &types) {
 	D_ASSERT(!types.empty()); // empty chunk not allowed
 	capacity = STANDARD_VECTOR_SIZE;
 	for (idx_t i = 0; i < types.size(); i++) {
+		// 创建一份内存.
 		VectorCache cache(types[i]);
 		data.emplace_back(cache);
 		vector_caches.push_back(move(cache));

@@ -23,6 +23,8 @@ class VectorCache;
    execution engine of DuckDB. It effectively represents a subset of a relation.
    It holds a set of vectors that all have the same length.
 
+   它表示了 Relation 的一个子集, 持有同等长度的 Vector.
+
     DataChunk is initialized using the DataChunk::Initialize function by
    providing it with a vector of TypeIds for the Vector members. By default,
    this function will also allocate a chunk of memory in the DataChunk for the
@@ -31,6 +33,9 @@ class VectorCache;
    become referencing vectors to other chunks as well (i.e. in the case an
    operator does not alter the data, such as a Filter operator which only adds a
    selection vector).
+
+   通过 DataChunk::Initialize 初始化, 默认这里也会创建对应的内存, DataChunk 会持有这些内存.
+   所有的子 Vector 会 Ref 这个 Chunk 的数据.
 
     In addition to holding the data of the vectors, the DataChunk also owns the
    selection vector that underlying vectors can point to.
