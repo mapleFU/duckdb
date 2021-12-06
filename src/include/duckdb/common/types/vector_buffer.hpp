@@ -135,7 +135,9 @@ public:
 private:
 	//! The string heap of this buffer
 	StringHeap heap;
-	// References to additional vector buffers referenced by this string buffer
+	//! References to additional vector buffers referenced by this string buffer
+	//!
+	//! 引用外部的内容.
 	vector<buffer_ptr<VectorBuffer>> references;
 };
 
@@ -155,6 +157,8 @@ public:
 
 private:
 	//! child vectors used for nested data
+	//!
+	//! 感觉这里是每个字段存一份 Vector.
 	vector<unique_ptr<Vector>> children;
 };
 
@@ -180,6 +184,7 @@ public:
 
 private:
 	//! child vectors used for nested data
+	//! 感觉是每个字段存一份 Vector.
 	unique_ptr<Vector> child;
 };
 

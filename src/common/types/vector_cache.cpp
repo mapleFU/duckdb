@@ -3,6 +3,7 @@
 
 namespace duckdb {
 
+//! 一个 enum 的 cache type.
 class VectorCacheBuffer : public VectorBuffer {
 public:
 	explicit VectorCacheBuffer(const LogicalType &type_p)
@@ -34,6 +35,7 @@ public:
 		}
 	}
 
+	//! 共享一部分实际的存储空间.
 	void ResetFromCache(Vector &result, const buffer_ptr<VectorBuffer> &buffer) {
 		D_ASSERT(type == result.GetType());
 		auto internal_type = type.InternalType();

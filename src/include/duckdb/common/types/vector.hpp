@@ -241,6 +241,8 @@ struct ConstantVector {
 	static const SelectionVector ZERO_SELECTION_VECTOR;
 };
 
+//! 对于部分类型:
+//! * DICTIONARY 映射到对应的子类型.
 struct DictionaryVector {
 	static inline const SelectionVector &SelVector(const Vector &vector) {
 		D_ASSERT(vector.GetVectorType() == VectorType::DICTIONARY_VECTOR);
@@ -260,7 +262,7 @@ struct DictionaryVector {
 	}
 };
 
-//!
+//! 比较正常的 FlatVector.
 struct FlatVector {
 	static inline data_ptr_t GetData(Vector &vector) {
 		return ConstantVector::GetData(vector);
