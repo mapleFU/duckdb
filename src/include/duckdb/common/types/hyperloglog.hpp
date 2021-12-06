@@ -12,7 +12,9 @@
 
 namespace duckdb {
 
-//! The HyperLogLog class holds a HyperLogLog counter for approximate cardinality counting
+//! The HyperLogLog class holds a HyperLogLog counter for approximate cardinality counting.
+//!
+//! 关于 counting 的估计.
 class HyperLogLog {
 public:
 	HyperLogLog();

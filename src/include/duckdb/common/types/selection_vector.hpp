@@ -15,6 +15,7 @@
 namespace duckdb {
 class VectorBuffer;
 
+//! 这个包装的太差了吧 XD. 老子都看不懂这玩意是用来干啥的.
 struct SelectionData {
 	explicit SelectionData(idx_t count) {
 		owned_data = unique_ptr<sel_t[]>(new sel_t[count]);
@@ -22,6 +23,8 @@ struct SelectionData {
 	unique_ptr<sel_t[]> owned_data;
 };
 
+//! MonetDB/X100 中对应的 SelectionVector.
+//! 这里对应的是一份位置映射, 通过 sel_vector 完成 <外部 idx -> 内部 idx> 的映射.
 struct SelectionVector {
 	SelectionVector() : sel_vector(nullptr) {
 	}
@@ -92,14 +95,16 @@ public:
 	}
 
 private:
+	/// 选择 vec, 指向 selection_data.
 	sel_t *sel_vector;
+	/// 具体存放的数据. 感觉这个对外暴露怪怪的.
 	buffer_ptr<SelectionData> selection_data;
 };
 
+/// 仅在有 `sel` 的时候, 才执行选择的逻辑.
 class OptionalSelection {
 public:
 	explicit inline OptionalSelection(SelectionVector *sel_p) : sel(sel_p) {
-
 		if (sel) {
 			vec.Initialize(sel->data());
 			sel = &vec;

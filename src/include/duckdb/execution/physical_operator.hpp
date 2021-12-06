@@ -65,6 +65,8 @@ public:
 
 //! PhysicalOperator is the base class of the physical operators present in the
 //! execution plan
+//!
+//! 这里比较让人明悟的是, 还有个 card.
 class PhysicalOperator {
 public:
 	PhysicalOperator(PhysicalOperatorType type, vector<LogicalType> types, idx_t estimated_cardinality)
@@ -79,7 +81,7 @@ public:
 	vector<unique_ptr<PhysicalOperator>> children;
 	//! The types returned by this physical operator
 	vector<LogicalType> types;
-	//! The extimated cardinality of this physical operator
+	//! The estimated cardinality of this physical operator
 	idx_t estimated_cardinality;
 	//! The global sink state of this operator
 	unique_ptr<GlobalSinkState> sink_state;

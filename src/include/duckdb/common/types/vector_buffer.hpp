@@ -20,6 +20,7 @@ class VectorBuffer;
 class Vector;
 class ChunkCollection;
 
+//! VectorBuffer 是存放具体数据的 Buffer, 外部需要解释如何访问 buffer.
 enum class VectorBufferType : uint8_t {
 	STANDARD_BUFFER,     // standard buffer, holds a single array of data
 	DICTIONARY_BUFFER,   // dictionary buffer, holds a selection vector
@@ -31,16 +32,20 @@ enum class VectorBufferType : uint8_t {
 	OPAQUE_BUFFER        // opaque buffer, can be created for example by the parquet reader
 };
 
-//! The VectorBuffer is a class used by the vector to hold its data
+//! The VectorBuffer is a class used by the vector to hold its data.
+//!
+//! VectorBuffer 不会 aware 自己的类型. Just a u8 wrapper.
 class VectorBuffer {
 public:
 	explicit VectorBuffer(VectorBufferType type) : buffer_type(type) {
 	}
+	//! 需要填充数据成员的话, 一定是 standard 的 buffer.
 	explicit VectorBuffer(idx_t data_size) : buffer_type(VectorBufferType::STANDARD_BUFFER) {
 		if (data_size > 0) {
 			data = unique_ptr<data_t[]>(new data_t[data_size]);
 		}
 	}
+	//! 需要填充数据成员的话, 一定是 standard 的 buffer.
 	explicit VectorBuffer(unique_ptr<data_t[]> data_p)
 	    : buffer_type(VectorBufferType::STANDARD_BUFFER), data(move(data_p)) {
 	}
@@ -69,10 +74,11 @@ public:
 
 protected:
 	VectorBufferType buffer_type;
+	//! u8 数组. 这里应该只有 buffer_type 比较正常的时候才会是非 null.
 	unique_ptr<data_t[]> data;
 };
 
-//! The DictionaryBuffer holds a selection vector
+//! The DictionaryBuffer holds a selection vector.
 class DictionaryBuffer : public VectorBuffer {
 public:
 	explicit DictionaryBuffer(const SelectionVector &sel)
@@ -99,6 +105,10 @@ public:
 private:
 	SelectionVector sel_vector;
 };
+
+/*
+ * 下面是一些特化的 var length buffer. 用于存储一些变长的内容.
+ */
 
 class VectorStringBuffer : public VectorBuffer {
 public:

@@ -34,6 +34,7 @@ unique_ptr<PhysicalOperator> PhysicalPlanGenerator::CreatePlan(LogicalGet &op) {
 	if (!op.children.empty()) {
 		// this is for table producing functions that consume subquery results
 		D_ASSERT(op.children.size() == 1);
+		// 创建 Physical Function, 返回.
 		auto node = make_unique<PhysicalTableInOutFunction>(op.returned_types, op.function, move(op.bind_data),
 		                                                    op.column_ids, op.estimated_cardinality);
 		node->children.push_back(CreatePlan(move(op.children[0])));

@@ -16,7 +16,12 @@ namespace duckdb {
 
 //! The ColumnBindingResolver resolves ColumnBindings into base tables
 //! (table_index, column_index) into physical indices into the DataChunks that
-//! are used within the execution engine
+//! are used within the execution engine.
+//!
+//! ColumnBinding 包含 (table_idx, column_idx), ColumnBindingResolver 把这个 binding 转成
+//! 符合列存的格式.
+//!
+//! 综上, 这里操作类似把 `BoundColumnRefExpression` 转成 `BoundReferenceExpression`, 结果对应到返回的表达式.
 class ColumnBindingResolver : public LogicalOperatorVisitor {
 public:
 	ColumnBindingResolver();

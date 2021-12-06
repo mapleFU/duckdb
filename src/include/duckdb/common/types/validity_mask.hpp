@@ -54,7 +54,9 @@ public:
 	DUCKDB_API ValidityData(const ValidityMask &original, idx_t count);
 };
 
-//! Type used for validity masks
+//! Type used for validity masks.
+//!
+//! Null Check Masks.
 template <typename V>
 struct TemplatedValidityMask {
 	using ValidityBuffer = TemplatedValidityData<V>;
@@ -262,6 +264,7 @@ protected:
 	buffer_ptr<ValidityBuffer> validity_data;
 };
 
+//! 看起来是判断是否是 null 的.
 struct ValidityMask : public TemplatedValidityMask<validity_t> {
 public:
 	ValidityMask() : TemplatedValidityMask(nullptr) {

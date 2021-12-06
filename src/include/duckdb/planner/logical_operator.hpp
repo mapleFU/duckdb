@@ -21,7 +21,16 @@
 namespace duckdb {
 
 //! LogicalOperator is the base class of the logical operators present in the
-//! logical query tree
+//! logical query tree.
+//!
+//! LogicalOperator 应该单纯表示怎么处理数据, 提供了逻辑上的指令. 它不等于物理上的 Plan.
+//!
+//! LogicalOperator 是指令式的:
+//! 1. 用户根据请求构建了一整颗 Parsed 结构 SQLStatement, 对应一个 ast.
+//! 2. 完成 Binding 之后, 系统被处理为 Logical 的 GetTable 等语句.
+//! 3. 在 TiDB 中, 有的东西是直接已处理的. 这里还会转一次 Physical.
+//!
+//! DuckDB 的优化基本上是逻辑优化, 所以不会和 System-R 那样走优化.
 class LogicalOperator {
 public:
 	explicit LogicalOperator(LogicalOperatorType type) : type(type) {
@@ -39,6 +48,7 @@ public:
 	//! The set of expressions contained within the operator, if any
 	vector<unique_ptr<Expression>> expressions;
 	//! The types returned by this logical operator. Set by calling LogicalOperator::ResolveTypes.
+	//! 在 ResolveTypes 调用的时候才获知.
 	vector<LogicalType> types;
 	//! Estimated Cardinality
 	idx_t estimated_cardinality = 0;

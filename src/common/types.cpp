@@ -265,6 +265,7 @@ string TypeIdToString(PhysicalType type) {
 }
 // LCOV_EXCL_STOP
 
+//! 根据物理的 align 创建内容.
 idx_t GetTypeIdSize(PhysicalType type) {
 	switch (type) {
 	case PhysicalType::BIT:

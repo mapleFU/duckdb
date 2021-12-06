@@ -13,6 +13,7 @@
 namespace duckdb {
 
 //! The vector size used in the execution engine
+//! 1024 正如 MonetX/100 所提, 要把数据持有在 cache 中.
 #ifndef STANDARD_VECTOR_SIZE
 #define STANDARD_VECTOR_SIZE 1024
 #endif

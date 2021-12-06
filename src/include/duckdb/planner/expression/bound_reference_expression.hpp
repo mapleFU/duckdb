@@ -12,7 +12,7 @@
 
 namespace duckdb {
 
-//! A BoundReferenceExpression represents a physical index into a DataChunk
+//! A BoundReferenceExpression represents a physical index into a DataChunk.
 class BoundReferenceExpression : public Expression {
 public:
 	BoundReferenceExpression(string alias, LogicalType type, idx_t index);

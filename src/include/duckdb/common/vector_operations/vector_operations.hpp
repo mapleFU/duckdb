@@ -22,6 +22,8 @@ namespace duckdb {
 // themselves) should not be equal! For example, if you call the function Add(A,
 // B, A) then ASSERT_RESTRICT will be triggered. Instead call AddInPlace(A, B)
 // or Add(A, B, C)
+//
+// 对于向量操作的一些支持.
 struct VectorOperations {
 	//===--------------------------------------------------------------------===//
 	// In-Place Operators

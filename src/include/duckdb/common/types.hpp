@@ -198,8 +198,10 @@ struct list_entry_t {
 // Internal Types
 //===--------------------------------------------------------------------===//
 
-// taken from arrow's type.h
-// 用来实现的物理类型, port 自 Arrow.
+//! taken from arrow's type.h
+//! 用来实现的物理类型, port 自 Arrow.
+//!
+//! 我倒是感觉它是不是直接用 arrow 也可以?
 enum class PhysicalType : uint8_t {
 	/// A NULL type having no physical storage
 	NA = 0,
@@ -270,6 +272,7 @@ enum class PhysicalType : uint8_t {
 	/// YEAR_MONTH or DAY_TIME interval in SQL style
 	INTERVAL = 21,
 
+	/// TODO(mwish): 这合理吗?
 	/// Precision- and scale-based decimal type. Storage type depends on the
 	/// parameters.
 	// DECIMAL = 22,
@@ -371,6 +374,8 @@ enum class LogicalTypeId : uint8_t {
 
 struct ExtraTypeInfo;
 
+//! SQL 的逻辑类型. 一个 LogicalType 会有 *唯一* 对应的 PhysicalType, 而一个 PhysicalType 有一个 fixed sized
+//! 的空间.
 struct LogicalType {
 	DUCKDB_API LogicalType();
 	DUCKDB_API LogicalType(LogicalTypeId id); // NOLINT: Allow implicit conversion from `LogicalTypeId`
@@ -387,6 +392,7 @@ struct LogicalType {
 	LogicalTypeId id() const {
 		return id_;
 	}
+	//! 返回对应的物理类型.
 	PhysicalType InternalType() const {
 		return physical_type_;
 	}

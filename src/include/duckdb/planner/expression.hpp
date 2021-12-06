@@ -18,6 +18,13 @@ class BaseStatistics;
 //!
 //! BoundExpression_ 都继承自 Expression. 它们原本是 ParsedExpression, 被 binder 更新为
 //! Expression.
+//!
+//! Expression 重要的一点是可以提供给 ExpressionExecutor 去求值.
+//!
+//! Expression 的内容包括(但不限于):
+//! 1. ColumnRef/Constant.
+//! 2. ComparationExpression/ConjunctionExpression/OperatorExpression
+//! 3. Subquery/Function.
 class Expression : public BaseExpression {
 public:
 	Expression(ExpressionType type, ExpressionClass expression_class, LogicalType return_type);

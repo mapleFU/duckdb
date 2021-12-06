@@ -16,6 +16,10 @@ namespace duckdb {
 
 enum class AlterType : uint8_t { INVALID = 0, ALTER_TABLE = 1, ALTER_VIEW = 2 };
 
+//! 对 Schema 的变更.
+//! Alter 只记录 Delta 进行处理.
+//!
+//! 目前我只关注 AlterTable.
 struct AlterInfo : public ParseInfo {
 	AlterInfo(AlterType type, string schema, string name) : type(type), schema(schema), name(name) {
 	}
